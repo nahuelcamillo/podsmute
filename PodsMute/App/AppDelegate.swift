@@ -24,7 +24,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var audioController: AudioMuteController!
     private var audioAccessoryMonitor: AudioAccessoryMonitor!
+    private var muteGestureService: MuteGestureService!
+    private var micUsageMonitor: MicUsageMonitor!
     private var statusBarController: StatusBarController!
+    private var sigtermSource: DispatchSourceSignal?
 
     // Keep reference to BluetoothManager for device detection (status display)
     private var bluetoothManager: BluetoothManager!
@@ -39,6 +42,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Setup audioaccessoryd notification monitoring
         setupAudioAccessoryMonitoring()
+
+        // Setup the official AVAudioApplication mute gesture path (macOS 14+)
+        setupMuteGesture()
+
+        // kill/logout sends SIGTERM, which skips applicationWillTerminate and
+        // would leave the mic muted; route it through graceful termination.
+        signal(SIGTERM, SIG_IGN)
+        sigtermSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        sigtermSource?.setEventHandler { NSApp.terminate(nil) }
+        sigtermSource?.resume()
 
         print("[AppDelegate] Application ready")
         print("[AppDelegate] Press your AirPods button to toggle mute")
@@ -55,6 +68,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         audioAccessoryMonitor?.stopMonitoring()
+        micUsageMonitor?.stop()
+        muteGestureService?.stop()
     }
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
@@ -72,6 +87,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Create audio accessory monitor (for AirPods crown button detection)
         audioAccessoryMonitor = AudioAccessoryMonitor()
+
+        // Create mute gesture service (official AVAudioApplication API)
+        muteGestureService = MuteGestureService()
+
+        // Create external mic usage monitor (arms the gesture only during calls)
+        micUsageMonitor = MicUsageMonitor()
 
         // Create status bar controller
         statusBarController = StatusBarController(
@@ -93,9 +114,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // Toggle system mute when AirPods triggers mute
             self.audioController.toggleMute()
             self.statusBarController.updateIcon()
-
-            // Show popover feedback
-            self.statusBarController.showMutePopover(isMuted: self.audioController.isMuted)
+            MuteHUD.shared.show(muted: self.audioController.isMuted)
         }
 
         // Debug: log all notifications
@@ -111,6 +130,40 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             print("[AppDelegate] WARNING: Failed to start audio accessory monitoring")
         }
+    }
+
+    private func setupMuteGesture() {
+        // Mirror the state the system applied to our process, so the global
+        // mute stays phase-locked with the AirPods confirmation tones.
+        muteGestureService.onGesture = { [weak self] muted in
+            guard let self = self else { return }
+            self.audioController.setMute(muted)
+            print("[AppDelegate] Gesture -> system-wide mute = \(self.audioController.isMuted)")
+            self.statusBarController.updateIcon()
+            // HUD excluded from screen capture - participants never see it
+            MuteHUD.shared.show(muted: self.audioController.isMuted)
+        }
+
+        // Arm the gesture only while another app captures the mic. This keeps
+        // the AirPods out of call mode (HFP) when idle: music quality stays
+        // intact and the stem keeps doing play/pause outside of calls.
+        micUsageMonitor.onChange = { [weak self] othersCapturing in
+            guard let self = self else { return }
+            if othersCapturing {
+                print("[AppDelegate] External mic usage detected - arming gesture")
+                self.muteGestureService.start()
+            } else {
+                print("[AppDelegate] No external mic usage - disarming gesture")
+                self.muteGestureService.stop()
+                // Leave the mic usable for the next meeting.
+                if self.audioController.isMuted {
+                    self.audioController.setMute(false)
+                    self.statusBarController.updateIcon()
+                }
+            }
+        }
+        // The initial check fires onChange if a call is already in progress.
+        micUsageMonitor.start()
     }
 
     private func checkForAirPods() {

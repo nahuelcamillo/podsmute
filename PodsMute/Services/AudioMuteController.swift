@@ -53,6 +53,10 @@ final class AudioMuteController: ObservableObject {
     /// Set the mute state of the default input device.
     /// - Parameter muted: Whether to mute (true) or unmute (false)
     func setMute(_ muted: Bool) {
+        // Device IDs are reassigned when audio hardware changes; re-resolve
+        // so we never act on a stale device.
+        refreshDefaultInputDevice()
+
         guard defaultInputDeviceID != kAudioObjectUnknown else {
             print("[AudioMuteController] No input device available")
             return
