@@ -18,7 +18,6 @@ final class StatusBarController {
     private let bluetoothManager: BluetoothManager
 
     private var cancellables = Set<AnyCancellable>()
-    private var mutePopover: NSPopover?
 
     // Menu item tags for updating
     private enum MenuItemTag: Int {
@@ -392,54 +391,4 @@ final class StatusBarController {
         alert.runModal()
     }
 
-    // MARK: - Popover
-
-    /// Show a brief popover indicating the current mute state
-    func showMutePopover(isMuted: Bool) {
-        // Close existing popover if any
-        mutePopover?.close()
-
-        // Create new popover
-        let popover = NSPopover()
-        popover.behavior = .transient
-        popover.animates = true
-
-        // Create content view controller
-        let viewController = NSViewController()
-        let containerView = NSView(frame: NSRect(x: 0, y: 0, width: 180, height: 32))
-
-        // Create icon
-        let iconName = isMuted ? "mic.slash.fill" : "mic.fill"
-        let iconImageView = NSImageView(frame: NSRect(x: 20, y: 6, width: 18, height: 18))
-        if let iconImage = NSImage(systemSymbolName: iconName, accessibilityDescription: nil) {
-            let config = NSImage.SymbolConfiguration(pointSize: 20, weight: .medium)
-            iconImageView.image = iconImage.withSymbolConfiguration(config)
-            iconImageView.contentTintColor = isMuted ? .systemRed : .systemGreen
-        }
-        containerView.addSubview(iconImageView)
-
-        // Create label
-        let label = NSTextField(labelWithString: isMuted ? "Microphone Off" : "Microphone On")
-        label.font = .systemFont(ofSize: 14, weight: .medium)
-        label.textColor = isMuted ? .systemRed : .systemGreen
-        label.frame = NSRect(x: 50, y: 2, width: 140, height: 22)
-        containerView.addSubview(label)
-
-        viewController.view = containerView
-        popover.contentViewController = viewController
-
-        // Store reference
-        mutePopover = popover
-
-        // Show from status bar button
-        if let button = statusItem.button {
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        }
-
-        // Auto-dismiss after 1.5 seconds
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            self?.mutePopover?.close()
-            self?.mutePopover = nil
-        }
-    }
 }
