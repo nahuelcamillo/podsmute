@@ -26,6 +26,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var audioAccessoryMonitor: AudioAccessoryMonitor!
     private var muteGestureService: MuteGestureService!
     private var micUsageMonitor: MicUsageMonitor!
+    private var bannerKiller: BannerKiller!
     private var statusBarController: StatusBarController!
     private var sigtermSource: DispatchSourceSignal?
 
@@ -94,6 +95,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Create external mic usage monitor (arms the gesture only during calls)
         micUsageMonitor = MicUsageMonitor()
 
+        // Create the system banner dismisser (needs Accessibility permission)
+        bannerKiller = BannerKiller()
+        bannerKiller.requestPermission()
+
         // Create status bar controller
         statusBarController = StatusBarController(
             audioController: audioController,
@@ -142,6 +147,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self.statusBarController.updateIcon()
             // HUD excluded from screen capture - participants never see it
             MuteHUD.shared.show(muted: self.audioController.isMuted)
+            // The system banner spawns with the gesture; hunt it down now
+            self.bannerKiller.huntBanner()
         }
 
         // Arm the gesture only while another app captures the mic. This keeps
