@@ -2,13 +2,15 @@
 //  BannerKiller.swift
 //  PodsMute
 //
-//  Dismisses the system "Microphone On/Off" banner via the Accessibility
-//  API. The banner (com.apple.MuteControlUserNotifications, posted by
-//  cloudpaird) bypasses Focus and notification preferences, so the only
-//  way to remove it is to close it right after it appears.
+//  Hides the system "Microphone On/Off" banner via the Accessibility API.
+//  The banner (com.apple.MuteControlUserNotifications, posted by cloudpaird)
+//  bypasses Focus and notification preferences. Its AX "Close" action is a
+//  no-op (the banner lives ~1.2s regardless), so instead we move the whole
+//  Notification Center window off-screen the instant the banner appears and
+//  restore it once the banner's lifetime ends.
 //
-//  We know the exact moment it shows up: the mute gesture handler fires
-//  at the same time, so the hunt runs in a short burst after each press.
+//  We know the exact moment it shows up: the mute gesture handler fires at
+//  the same time, so the hunt runs in a short burst after each press.
 //
 
 import Cocoa
@@ -20,8 +22,8 @@ final class BannerKiller {
 
     // MARK: - Properties
 
-    /// Verbose AX tree dump while hunting (recon mode for development).
-    var reconMode = true
+    /// Verbose AX tree dump while hunting (development diagnostics only).
+    var reconMode = false
 
     private var huntTimer: Timer?
     private var huntDeadline = Date.distantPast
