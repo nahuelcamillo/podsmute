@@ -31,6 +31,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotKeyService: HotKeyService!
     private var statusBarController: StatusBarController!
     private var sigtermSource: DispatchSourceSignal?
+    // SPIKE: control the audio bridge by signal while testing.
+    private var usr1Source: DispatchSourceSignal?
+    private var usr2Source: DispatchSourceSignal?
 
     // Keep reference to BluetoothManager for device detection (status display)
     private var bluetoothManager: BluetoothManager!
@@ -58,6 +61,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         sigtermSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
         sigtermSource?.setEventHandler { NSApp.terminate(nil) }
         sigtermSource?.resume()
+
+        // SPIKE: SIGUSR1 toggles the AirPods→BlackHole bridge; SIGUSR2 toggles
+        // its mute. Lets us validate the virtual-mic approach before wiring it
+        // to the gesture.
+        signal(SIGUSR1, SIG_IGN)
+        usr1Source = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+        usr1Source?.setEventHandler {
+            if AudioBridge.shared.running {
+                AudioBridge.shared.stop()
+            } else {
+                AudioBridge.shared.start(inputMatch: "airpods", outputMatch: "blackhole")
+            }
+            print("[AppDelegate] bridge running = \(AudioBridge.shared.running)")
+        }
+        usr1Source?.resume()
+
+        signal(SIGUSR2, SIG_IGN)
+        usr2Source = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: .main)
+        usr2Source?.setEventHandler {
+            AudioBridge.shared.muted.toggle()
+            print("[AppDelegate] bridge muted = \(AudioBridge.shared.muted)")
+        }
+        usr2Source?.resume()
 
         print("[AppDelegate] Application ready")
         print("[AppDelegate] Press your AirPods button to toggle mute")
