@@ -58,18 +58,32 @@ el manejo del banner del sistema.
   `AppSettings` postea `.podsMuteShortcutsChanged` y `AppDelegate` re-registra (`unregisterAll`).
 
 ### 8. Preferencias — `AppSettings` + ventana
-- `AppSettings`: singleton sobre `UserDefaults`, centralizado. Hoy: `muteToneEnabled`,
-  `muteShortcut`, `toggleSoundShortcut`. Nombrado `AppSettings` (no `Settings`) para no
-  chocar con `SwiftUI.Settings`.
+- `AppSettings`: singleton sobre `UserDefaults`, centralizado. Claves: `muteToneEnabled`,
+  `muteShortcut`, `toggleSoundShortcut`, `bannerKillerEnabled`, `toneVolume`. Nombrado
+  `AppSettings` (no `Settings`) para no chocar con `SwiftUI.Settings`. Postea
+  `.podsMuteToneEnabledChanged` (sync de UI) y `.podsMuteShortcutsChanged` (re-registro).
 - `Shortcut`: modelo (keyCode + modifiers Carbon) con conversión Cocoa↔Carbon,
   `displayString` (⌥⌘M) y serialización a UserDefaults. keyCode es común a NSEvent y Carbon.
 - `ShortcutRecorderView`: control "click para grabar" — captura el próximo keyDown con
   `addLocalMonitorForEvents`, Esc cancela, × limpia. Requiere ≥1 modificador (cmd/opt/ctrl).
 - `PreferencesWindowController`: ventana AppKit (sin xib). Como la app es `.accessory`,
   pasa a `.regular` mientras la ventana está abierta (para recibir foco de teclado) y
-  vuelve a `.accessory` al cerrar. Abrir desde el menú → "Preferences…" (⌘,).
-- Detalle menor pendiente: el toggle de sonido está en el menú Y en la ventana; no se
-  sincronizan en vivo entre sí (cada uno lee al abrirse). Se consolida al pulir la UI.
+  vuelve a `.accessory` al cerrar. Abrir desde el menú → "Preferences…" (⌘,). Secciones:
+  Keyboard Shortcuts (2 grabadores), Audio Cue (checkbox + volumen con íconos de altavoz,
+  atenuado cuando el cue está off, preview al soltar el slider), System Banner (checkbox).
+- El toggle de sonido está en el menú Y en la ventana: se sincronizan en vivo vía
+  `.podsMuteToneEnabledChanged` (menú, checkbox y atajo siempre alineados).
+- **Volumen del cue**: `ToneService` usa amplitude base 0.5 (headroom) y escala con
+  `mainMixerNode.outputVolume = toneVolume` (default 0.44 ≈ el volumen validado original).
+
+### Nota de arranque (bug fix importante)
+`BluetoothManager` consultaba IOBluetooth **síncrono en el hilo principal** en su init.
+La primera init del `IOBluetoothCoreBluetoothCoordinator` bloquea en un semáforo bajo el
+contexto del LaunchAgent (CoreBluetooth no listo) → la app **se colgaba al iniciar sesión**.
+Fix: todas las llamadas IOBluetooth corren en una cola serial de fondo (`btQueue`), los
+resultados se publican en main. `ToneService` también crea su `AVAudioEngine` de forma
+lazy (no tocar audio durante el launch). Diagnóstico: `sample <pid>` mostró el stack
+bloqueado en `IOBluetoothDevice.pairedDevices` → `dispatch_semaphore_wait`.
 
 ### 9. Banner del sistema — `BannerKiller`
 El banner "Microphone On/Off" lo postea `cloudpaird`

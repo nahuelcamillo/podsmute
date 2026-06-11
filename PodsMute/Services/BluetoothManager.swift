@@ -61,6 +61,11 @@ final class BluetoothManager: ObservableObject {
 
     private var statusCheckTimer: Timer?
 
+    /// All IOBluetooth calls run here. The CoreBluetooth coordinator's first
+    /// init can block on a semaphore (notably under the LaunchAgent context),
+    /// which would freeze the main thread / app launch if called there.
+    private let btQueue = DispatchQueue(label: "ar.daten.podsmute.bluetooth", qos: .utility)
+
     // MARK: - Computed Properties
 
     /// Convenience property for connection status
@@ -96,28 +101,19 @@ final class BluetoothManager: ObservableObject {
         statusCheckTimer = nil
     }
 
-    /// Check actual Bluetooth connection status of AirPods
+    /// Check actual Bluetooth connection status of AirPods.
+    /// IOBluetooth runs off the main thread; results are published on main.
     func checkConnectionStatus() {
-        guard let pairedDevices = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] else {
-            updateState(connected: false, deviceName: nil)
-            return
-        }
-
-        // Look for connected AirPods
-        for device in pairedDevices {
-            guard let name = device.name else { continue }
-
-            // Check if it's a supported AirPods device (by name)
-            if isSupportedAirPods(name: name) {
-                if device.isConnected() {
-                    updateState(connected: true, deviceName: name)
-                    return
-                }
+        btQueue.async { [weak self] in
+            guard let self = self else { return }
+            let devices = (IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice]) ?? []
+            var connectedName: String?
+            for device in devices {
+                guard let name = device.name, self.isSupportedAirPods(name: name) else { continue }
+                if device.isConnected() { connectedName = name; break }
             }
+            self.updateState(connected: connectedName != nil, deviceName: connectedName)
         }
-
-        // No connected AirPods found
-        updateState(connected: false, deviceName: nil)
     }
 
     private func updateState(connected: Bool, deviceName: String?) {

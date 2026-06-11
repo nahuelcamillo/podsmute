@@ -15,10 +15,15 @@ import AVFoundation
 
 final class ToneService {
 
+    static let shared = ToneService()
+    private init() {}
+
     // MARK: - Properties
 
-    private let engine = AVAudioEngine()
-    private let player = AVAudioPlayerNode()
+    // Created lazily on first use: touching AVAudioEngine during app launch
+    // (especially from the LaunchAgent context) can block the main thread.
+    private lazy var engine = AVAudioEngine()
+    private lazy var player = AVAudioPlayerNode()
     private let format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1)!
     private var prepared = false
     private var stopTask: DispatchWorkItem?
@@ -29,14 +34,19 @@ final class ToneService {
 
     private let noteDuration = 0.085
     private let gapDuration  = 0.035
-    private let amplitude: Float = 0.22
+    // Buffer peak amplitude. Headroom above the validated ~0.22 so the volume
+    // slider can go louder; the configurable volume scales the mixer below.
+    private let amplitude: Float = 0.5
 
     // MARK: - Public Methods
 
-    /// Play the cue matching the resulting state.
+    /// Play the cue matching the resulting state, at the configured volume.
     func play(muted: Bool) {
         prepare()
         startIfNeeded()
+
+        // Apply the user's volume (0...1) to the mixer output.
+        engine.mainMixerNode.outputVolume = Float(AppSettings.shared.toneVolume)
 
         guard let buffer = makeBuffer(notes: muted ? muteNotes : unmuteNotes) else { return }
         player.scheduleBuffer(buffer, at: nil, options: [], completionHandler: nil)

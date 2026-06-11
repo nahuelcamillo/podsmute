@@ -29,7 +29,12 @@ final class AppSettings {
         static let muteToneEnabled = "muteToneEnabled"
         static let muteShortcut = "muteShortcut"
         static let toggleSoundShortcut = "toggleSoundShortcut"
+        static let bannerKillerEnabled = "bannerKillerEnabled"
+        static let toneVolume = "toneVolume"
     }
+
+    /// Default cue volume (0...1). ~0.44 reproduces the validated loudness.
+    static let defaultToneVolume = 0.44
 
     // Factory defaults match the previously hardcoded combos.
     static let defaultMuteShortcut = Shortcut(keyCode: 46, // M
@@ -42,7 +47,21 @@ final class AppSettings {
             Keys.muteToneEnabled: true,
             Keys.muteShortcut: Self.defaultMuteShortcut.dictionary,
             Keys.toggleSoundShortcut: Self.defaultToggleSoundShortcut.dictionary,
+            Keys.bannerKillerEnabled: true,
+            Keys.toneVolume: Self.defaultToneVolume,
         ])
+    }
+
+    /// Whether to hide the system "Microphone On/Off" banner (needs Accessibility).
+    var bannerKillerEnabled: Bool {
+        get { defaults.bool(forKey: Keys.bannerKillerEnabled) }
+        set { defaults.set(newValue, forKey: Keys.bannerKillerEnabled) }
+    }
+
+    /// Volume of the audio cue (0...1).
+    var toneVolume: Double {
+        get { defaults.double(forKey: Keys.toneVolume) }
+        set { defaults.set(min(1, max(0, newValue)), forKey: Keys.toneVolume) }
     }
 
     /// Whether to play our distinctive mute/unmute audio cue.

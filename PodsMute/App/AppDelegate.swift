@@ -104,8 +104,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         bannerKiller = BannerKiller()
         bannerKiller.requestPermission()
 
-        // Create the distinctive mute/unmute audio cue
-        toneService = ToneService()
+        // The distinctive mute/unmute audio cue (shared so Preferences can preview)
+        toneService = ToneService.shared
 
         // Create the global hotkey service
         hotKeyService = HotKeyService()
@@ -115,9 +115,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             audioController: audioController,
             bluetoothManager: bluetoothManager
         )
-
-        // Check for paired AirPods (for status display)
-        checkForAirPods()
     }
 
     private func setupAudioAccessoryMonitoring() {
@@ -156,8 +153,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self.audioController.setMute(muted)
             print("[AppDelegate] Gesture -> system-wide mute = \(self.audioController.isMuted)")
             self.presentMuteFeedback()
-            // The system banner spawns with the gesture; hunt it down now
-            self.bannerKiller.huntBanner()
+            // The system banner spawns with the gesture; hunt it down now (opt-out)
+            if AppSettings.shared.bannerKillerEnabled {
+                self.bannerKiller.huntBanner()
+            }
         }
 
         // Arm the gesture only while another app captures the mic. This keeps
@@ -227,17 +226,4 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func checkForAirPods() {
-        let devices = bluetoothManager.pairedDevices()
-
-        if devices.isEmpty {
-            print("[AppDelegate] No paired AirPods found")
-            print("[AppDelegate] Please pair your AirPods Max or AirPods Pro and try again")
-        } else {
-            print("[AppDelegate] Found \(devices.count) paired AirPods device(s):")
-            for device in devices {
-                print("  - \(device.name) (\(device.id))")
-            }
-        }
-    }
 }
