@@ -150,6 +150,47 @@ case "inputvol":
         if setAny { print("[\(dev)] \(deviceName(dev))  inputvol -> \(target)") }
         else { print("[\(dev)] could not set input volume (not settable)"); exit(1) }
     }
+case "procs":
+    // List CoreAudio process objects that are capturing, and WHICH devices
+    // each one holds open (input scope). Validates the data the app uses to
+    // decide whether an external capture bypasses the BlackHole bridge.
+    var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList,
+                                          mScope: kAudioObjectPropertyScopeGlobal,
+                                          mElement: kAudioObjectPropertyElementMain)
+    var size: UInt32 = 0
+    guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size) == noErr
+    else { print("no process object list"); exit(1) }
+    var objs = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+    guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &objs) == noErr
+    else { print("cannot read process object list"); exit(1) }
+
+    func procDevices(_ obj: AudioObjectID, scope: AudioObjectPropertyScope) -> [AudioObjectID] {
+        var a = AudioObjectPropertyAddress(mSelector: kAudioProcessPropertyDevices,
+                                           mScope: scope, mElement: kAudioObjectPropertyElementMain)
+        var sz: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(obj, &a, 0, nil, &sz) == noErr, sz > 0 else { return [] }
+        var ids = [AudioObjectID](repeating: 0, count: Int(sz) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(obj, &a, 0, nil, &sz, &ids) == noErr else { return [] }
+        return ids
+    }
+
+    for obj in objs {
+        var pid: pid_t = -1
+        _ = getProp(obj, kAudioProcessPropertyPID, kAudioObjectPropertyScopeGlobal, &pid)
+        var running: UInt32 = 0
+        _ = getProp(obj, kAudioProcessPropertyIsRunningInput, kAudioObjectPropertyScopeGlobal, &running)
+        let inputDevs = procDevices(obj, scope: kAudioObjectPropertyScopeInput)
+        let allDevs = procDevices(obj, scope: kAudioObjectPropertyScopeGlobal)
+        guard running != 0 || !inputDevs.isEmpty else { continue }
+        var name = "?"
+        if pid > 0 {
+            var buf = [CChar](repeating: 0, count: 1024)
+            if proc_name(pid, &buf, UInt32(buf.count)) > 0 { name = String(cString: buf) }
+        }
+        let inputs = inputDevs.map { "[\($0)] \(deviceName($0))" }.joined(separator: ", ")
+        let all = allDevs.map { "\($0)" }.joined(separator: ",")
+        print("pid \(pid) (\(name))  capturing:\(running != 0 ? "YES" : "no")  inputDevs: \(inputs.isEmpty ? "-" : inputs)  allDevs: \(all)")
+    }
 default:
-    print("usage: audioctl [list | set-input <name-substr> | mute <on|off|status> | running | inputvol [0..1]]")
+    print("usage: audioctl [list | set-input <name-substr> | mute <on|off|status> | running | inputvol [0..1] | procs]")
 }
