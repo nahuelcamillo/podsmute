@@ -27,6 +27,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var muteGestureService: MuteGestureService!
     private var micUsageMonitor: MicUsageMonitor!
     private var bannerKiller: BannerKiller!
+    private var toneService: ToneService!
+    private var hotKeyService: HotKeyService!
     private var statusBarController: StatusBarController!
     private var sigtermSource: DispatchSourceSignal?
 
@@ -46,6 +48,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Setup the official AVAudioApplication mute gesture path (macOS 14+)
         setupMuteGesture()
+
+        // Global keyboard shortcuts (work even if the menu bar icon is hidden)
+        setupHotKeys()
 
         // kill/logout sends SIGTERM, which skips applicationWillTerminate and
         // would leave the mic muted; route it through graceful termination.
@@ -99,6 +104,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         bannerKiller = BannerKiller()
         bannerKiller.requestPermission()
 
+        // Create the distinctive mute/unmute audio cue
+        toneService = ToneService()
+
+        // Create the global hotkey service
+        hotKeyService = HotKeyService()
+
         // Create status bar controller
         statusBarController = StatusBarController(
             audioController: audioController,
@@ -144,9 +155,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self = self else { return }
             self.audioController.setMute(muted)
             print("[AppDelegate] Gesture -> system-wide mute = \(self.audioController.isMuted)")
-            self.statusBarController.updateIcon()
-            // HUD excluded from screen capture - participants never see it
-            MuteHUD.shared.show(muted: self.audioController.isMuted)
+            self.presentMuteFeedback()
             // The system banner spawns with the gesture; hunt it down now
             self.bannerKiller.huntBanner()
         }
@@ -171,6 +180,43 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // The initial check fires onChange if a call is already in progress.
         micUsageMonitor.start()
+    }
+
+    // MARK: - Global Hotkeys
+
+    private func setupHotKeys() {
+        hotKeyService.start()
+
+        // ⌥⌘M: toggle mute. Mutes via CoreAudio directly (not the stem gesture),
+        // so it works without AirPods and does NOT trigger the system banner.
+        hotKeyService.register(keyCode: HotKeyCode.m,
+                               modifiers: HotKeyMod.option | HotKeyMod.command) { [weak self] in
+            guard let self = self else { return }
+            self.audioController.toggleMute()
+            print("[AppDelegate] Hotkey ⌥⌘M -> mute = \(self.audioController.isMuted)")
+            self.presentMuteFeedback()
+        }
+
+        // ⌥⌘S: toggle the audio cue. If turned on, play a sample so the change
+        // is confirmed by ear; silence confirms it was turned off.
+        hotKeyService.register(keyCode: HotKeyCode.s,
+                               modifiers: HotKeyMod.option | HotKeyMod.command) { [weak self] in
+            guard let self = self else { return }
+            AppSettings.shared.muteToneEnabled.toggle()
+            let enabled = AppSettings.shared.muteToneEnabled
+            print("[AppDelegate] Hotkey ⌥⌘S -> cue enabled = \(enabled)")
+            self.statusBarController.syncToneMenuItem()
+            if enabled { self.toneService.play(muted: false) }
+        }
+    }
+
+    /// Shared mute feedback: icon, capture-proof HUD, and the optional cue.
+    private func presentMuteFeedback() {
+        statusBarController.updateIcon()
+        MuteHUD.shared.show(muted: audioController.isMuted)
+        if AppSettings.shared.muteToneEnabled {
+            toneService.play(muted: audioController.isMuted)
+        }
     }
 
     private func checkForAirPods() {

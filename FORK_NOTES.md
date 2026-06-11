@@ -33,7 +33,35 @@ el manejo del banner del sistema.
 - HUD estilo "bezel de volumen" con `NSWindow.sharingType = .none`: lo ves vos, **no
   aparece en screen share** (reemplaza el popover original, que sí se filtraba).
 
-### 5. Banner del sistema — `BannerKiller`
+### 5. Feedback audible distintivo — `ToneService`
+- Tono sintético (sin archivos) que se suma al tono nativo del sistema para
+  distinguir la acción de oído: **mute = grave descendente** (C5→F4), **unmute =
+  agudo ascendente** (E5→B5). Registro + dirección lo hacen inconfundible.
+- Engine de output on-demand (se detiene tras ~1.5s de inactividad).
+- Opt-out vía `AppSettings.muteToneEnabled` (toggle en el menú).
+
+### 6. Entry point AppKit + ícono — `PodsMuteApp` / `StatusBarController`
+- Entry point reescrito de SwiftUI `App`/`Settings` a **AppKit puro**
+  (`NSApplication` + `setActivationPolicy(.accessory)`): la combinación SwiftUI
+  `Settings`-only no registraba bien el NSStatusItem.
+- Ícono de barra: de un ícono dibujado a mano (que rendía con ancho 0 en macOS 26)
+  a un **SF Symbol template** (`mic.fill` / `mic.slash.fill`).
+- **Pendiente conocido**: en MacBooks con notch + barra llena, macOS clava el item
+  nuevo detrás del notch y no lo reubica → el ícono puede no verse. Mitigación: los
+  hotkeys globales (abajo) permiten operar sin el ícono.
+
+### 7. Atajos de teclado globales — `HotKeyService`
+- Carbon `RegisterEventHotKey` (sin permiso de Accesibilidad, consume el combo).
+- `⌥⌘M` = toggle mute (por CoreAudio directo → **no dispara el banner**, funciona sin
+  AirPods); `⌥⌘S` = toggle del tono (suena al activar, silencio al desactivar).
+- **TODO**: hacer los atajos configurables (hoy hardcodeados) — parte del futuro
+  sistema de Preferencias.
+
+### 8. Preferencias — `AppSettings`
+- Singleton sobre `UserDefaults`, centralizado para crecer. Hoy: `muteToneEnabled`.
+- Nombrado `AppSettings` (no `Settings`) para no chocar con `SwiftUI.Settings`.
+
+### 9. Banner del sistema — `BannerKiller`
 El banner "Microphone On/Off" lo postea `cloudpaird`
 (`com.apple.MuteControlUserNotifications`) y **se filtra a los participantes al compartir
 pantalla completa**. No es suprimible por configuración (ignora Focus, no aparece en

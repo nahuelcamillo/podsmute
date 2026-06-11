@@ -1,3 +1,8 @@
 build/
 .DS_Store
 backups/
+
+# Compiled diagnostic CLIs (sources are tracked, binaries are not)
+tools/audioctl
+tools/winls
+tools/winwatch

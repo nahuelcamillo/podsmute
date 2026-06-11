@@ -2,26 +2,27 @@
 //  PodsMuteApp.swift
 //  PodsMute
 //
-//  Main app entry point using SwiftUI App lifecycle.
+//  Classic AppKit entry point. A SwiftUI `App` with only a `Settings` scene
+//  did not reliably register the NSStatusItem in the menu bar (the app never
+//  fully activated as an accessory). Driving NSApplication directly and
+//  setting .accessory explicitly fixes that.
 //
 
-import SwiftUI
+import Cocoa
 
-/// Main application entry point.
-///
-/// This is a menu bar only app (no main window).
-/// The AppDelegate handles all initialization and status bar setup.
 @main
-struct PodsMuteApp: App {
+enum PodsMuteMain {
 
-    // Use NSApplicationDelegate for app lifecycle
-    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    // Retained for the lifetime of the process (NSApplication.delegate is weak).
+    static var delegate: AppDelegate?
 
-    var body: some Scene {
-        // Menu bar only app - no windows
-        // Settings scene is required but we provide an empty view
-        Settings {
-            EmptyView()
-        }
+    static func main() {
+        let app = NSApplication.shared
+        let delegate = AppDelegate()
+        Self.delegate = delegate
+        app.delegate = delegate
+        // Menu-bar-only app: no Dock icon, no main window.
+        app.setActivationPolicy(.accessory)
+        app.run()
     }
 }

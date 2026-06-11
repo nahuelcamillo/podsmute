@@ -18,6 +18,7 @@ final class StatusBarController {
     private let bluetoothManager: BluetoothManager
 
     private var cancellables = Set<AnyCancellable>()
+    private var toneMenuItem: NSMenuItem?
 
     // Menu item tags for updating
     private enum MenuItemTag: Int {
@@ -122,6 +123,19 @@ final class StatusBarController {
 
         menu.addItem(NSMenuItem.separator())
 
+        // Preferences: toggle the distinctive mute/unmute audio cue
+        let toneItem = NSMenuItem(
+            title: "Mute/Unmute Sound",
+            action: #selector(toggleMuteTone(_:)),
+            keyEquivalent: ""
+        )
+        toneItem.target = self
+        toneItem.state = AppSettings.shared.muteToneEnabled ? .on : .off
+        menu.addItem(toneItem)
+        toneMenuItem = toneItem
+
+        menu.addItem(NSMenuItem.separator())
+
         // About
         let aboutItem = NSMenuItem(
             title: "About PodsMute",
@@ -193,84 +207,17 @@ final class StatusBarController {
         button.toolTip = "Microphone: \(muteStatus)\nAirPods: \(connectionStatus)"
     }
 
-    /// Create status bar icon with headphones and mic badge
-    private func createStatusBarIcon(isMuted: Bool) -> NSImage {
-        let size = NSSize(width: 24, height: 18)
-
-        // Determine if menu bar is dark (needs white icon) or light (needs black icon)
-        let isDark = NSApp.effectiveAppearance.name.rawValue.lowercased().contains("dark")
-        let menuBarColor: NSColor = isDark ? .white : .black
-
-        let image = NSImage(size: size, flipped: false) { rect in
-            // 1. Draw headphones icon with appropriate color for menu bar
-            if let headphonesImage = NSImage(systemSymbolName: "headphones", accessibilityDescription: nil) {
-                let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
-                if let configured = headphonesImage.withSymbolConfiguration(config) {
-                    let headphonesSize = configured.size
-                    let headphonesRect = NSRect(
-                        x: 0,
-                        y: (rect.height - headphonesSize.height) / 2,
-                        width: headphonesSize.width,
-                        height: headphonesSize.height
-                    )
-
-                    // Tint headphones to match menu bar
-                    let tintedHeadphones = NSImage(size: headphonesSize)
-                    tintedHeadphones.lockFocus()
-                    menuBarColor.set()
-                    NSRect(origin: .zero, size: headphonesSize).fill(using: .sourceOver)
-                    configured.draw(in: NSRect(origin: .zero, size: headphonesSize), from: .zero, operation: .destinationIn, fraction: 1.0)
-                    tintedHeadphones.unlockFocus()
-
-                    tintedHeadphones.draw(in: headphonesRect, from: .zero, operation: .sourceOver, fraction: 1.0)
-                }
-            }
-
-            // 2. Draw mic badge in lower-right corner
-            let badgeSize: CGFloat = 11
-            let badgeRect = NSRect(
-                x: rect.width - badgeSize,
-                y: 0,
-                width: badgeSize,
-                height: badgeSize
-            )
-
-            // Draw colored circle background
-            let circlePath = NSBezierPath(ovalIn: badgeRect)
-            (isMuted ? NSColor.systemRed : NSColor.systemGreen).setFill()
-            circlePath.fill()
-
-            // Draw white mic icon on badge
-            let micName = isMuted ? "mic.slash.fill" : "mic.fill"
-            if let micImage = NSImage(systemSymbolName: micName, accessibilityDescription: nil) {
-                let micConfig = NSImage.SymbolConfiguration(pointSize: 6, weight: .bold)
-                if let configuredMic = micImage.withSymbolConfiguration(micConfig) {
-                    let micSize = configuredMic.size
-
-                    // Create white-tinted version
-                    let tintedMic = NSImage(size: micSize)
-                    tintedMic.lockFocus()
-                    NSColor.white.set()
-                    NSRect(origin: .zero, size: micSize).fill(using: .sourceOver)
-                    configuredMic.draw(in: NSRect(origin: .zero, size: micSize), from: .zero, operation: .destinationIn, fraction: 1.0)
-                    tintedMic.unlockFocus()
-
-                    // Center mic in badge
-                    let micRect = NSRect(
-                        x: badgeRect.midX - micSize.width / 2,
-                        y: badgeRect.midY - micSize.height / 2,
-                        width: micSize.width,
-                        height: micSize.height
-                    )
-                    tintedMic.draw(in: micRect, from: .zero, operation: .sourceOver, fraction: 1.0)
-                }
-            }
-
-            return true
-        }
-
-        // Don't use template mode (we need the colored badge)
-        image.isTemplate = false
+    /// Create the menu bar icon for the current mute state.
+    ///
+    /// Uses a standard SF Symbol as a template image (auto-adapts to light/dark
+    /// and to the menu bar tint). The hand-drawn headphones+badge icon used
+    /// before rendered with zero width on macOS 26 and never appeared.
+    private func createStatusBarIcon(isMuted: Bool) -> NSImage? {
+        let symbolName = isMuted ? "mic.slash.fill" : "mic.fill"
+        let config = NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)
+        let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "PodsMute")?
+            .withSymbolConfiguration(config)
+        image?.isTemplate = true
         return image
     }
 
@@ -362,6 +309,16 @@ final class StatusBarController {
 
     @objc private func reconnect() {
         bluetoothManager.autoConnectToPairedDevice()
+    }
+
+    @objc private func toggleMuteTone(_ sender: NSMenuItem) {
+        AppSettings.shared.muteToneEnabled.toggle()
+        sender.state = AppSettings.shared.muteToneEnabled ? .on : .off
+    }
+
+    /// Refresh the cue menu item checkmark (e.g. after toggling via hotkey).
+    func syncToneMenuItem() {
+        toneMenuItem?.state = AppSettings.shared.muteToneEnabled ? .on : .off
     }
 
     @objc private func quit() {
