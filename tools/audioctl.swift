@@ -114,6 +114,42 @@ case "running":
     var v: UInt32 = 0
     _ = getProp(dev, kAudioDevicePropertyDeviceIsRunningSomewhere, kAudioObjectPropertyScopeGlobal, &v)
     print("[\(dev)] \(deviceName(dev))  capturing:\(v != 0 ? "YES" : "no")")
+case "inputvol":
+    // Get/set input volume scalar (0...1). Lets us compare "volume 0" vs the
+    // mute flag and see which one Chrome reports as track.muted.
+    let dev = defaultInput()
+    let sub = args.count > 2 ? args[2] : "get"
+    let elements: [AudioObjectPropertyElement] = [kAudioObjectPropertyElementMain, 1, 2]
+    func volAddr(_ el: AudioObjectPropertyElement) -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar,
+                                   mScope: kAudioObjectPropertyScopeInput, mElement: el)
+    }
+    if sub == "get" {
+        for el in elements {
+            var addr = volAddr(el)
+            guard AudioObjectHasProperty(dev, &addr) else { continue }
+            var v: Float32 = 0; var sz = UInt32(MemoryLayout<Float32>.size)
+            if AudioObjectGetPropertyData(dev, &addr, 0, nil, &sz, &v) == noErr {
+                print("[\(dev)] \(deviceName(dev))  inputvol(el \(el)) = \(v)")
+                exit(0)
+            }
+        }
+        print("[\(dev)] \(deviceName(dev)) has no input volume scalar"); exit(1)
+    } else {
+        let target = Float32(max(0, min(1, Double(sub) ?? 0)))
+        var setAny = false
+        for el in elements {
+            var addr = volAddr(el)
+            guard AudioObjectHasProperty(dev, &addr) else { continue }
+            var v = target
+            if AudioObjectSetPropertyData(dev, &addr, 0, nil,
+                                          UInt32(MemoryLayout<Float32>.size), &v) == noErr {
+                setAny = true
+            }
+        }
+        if setAny { print("[\(dev)] \(deviceName(dev))  inputvol -> \(target)") }
+        else { print("[\(dev)] could not set input volume (not settable)"); exit(1) }
+    }
 default:
-    print("usage: audioctl [list | set-input <name-substr> | mute <on|off|status> | running]")
+    print("usage: audioctl [list | set-input <name-substr> | mute <on|off|status> | running | inputvol [0..1]]")
 }

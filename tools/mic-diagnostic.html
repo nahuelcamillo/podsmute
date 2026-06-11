@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>PodsMute · Diagnóstico de micrófono (lo que ve Chrome)</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font: 15px/1.5 -apple-system, system-ui, sans-serif; background:#1c1c1e; color:#eee;
+         margin:0; padding:24px; max-width:760px; margin-inline:auto; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  p.sub { color:#999; margin:0 0 20px; }
+  .card { background:#2c2c2e; border-radius:12px; padding:16px 18px; margin-bottom:16px; }
+  .muted-state { font-size:34px; font-weight:700; text-align:center; padding:18px;
+                 border-radius:12px; transition:background .15s; }
+  .is-muted   { background:#5c1f1f; color:#ff8a8a; }
+  .is-live    { background:#1f4d2a; color:#86efac; }
+  .grid { display:grid; grid-template-columns:auto 1fr; gap:6px 14px; font-size:14px; }
+  .grid div:nth-child(odd) { color:#999; }
+  .meter { height:18px; background:#000; border-radius:9px; overflow:hidden; margin-top:6px; }
+  .meter > div { height:100%; width:0%; background:linear-gradient(90deg,#34d399,#fbbf24,#f87171);
+                 transition:width .05s; }
+  button { font:inherit; background:#0a84ff; color:#fff; border:0; border-radius:8px;
+           padding:8px 16px; cursor:pointer; }
+  select { font:inherit; background:#3a3a3c; color:#eee; border:0; border-radius:8px; padding:6px 10px; }
+  #log { font:12px/1.5 ui-monospace, Menlo, monospace; background:#000; border-radius:8px;
+         padding:12px; height:200px; overflow:auto; white-space:pre-wrap; }
+  .ev-mute   { color:#ff8a8a; }
+  .ev-unmute { color:#86efac; }
+  .hint { color:#8aa; font-size:13px; }
+</style>
+</head>
+<body>
+  <h1>Diagnóstico de micrófono</h1>
+  <p class="sub">Muestra en vivo lo que Chrome ve del micrófono — para entender por qué Meet reacciona al mute.</p>
+
+  <div class="card">
+    <button id="start">Iniciar captura</button>
+    <select id="devices" style="display:none"></select>
+    <p class="hint" id="ctx-warn"></p>
+  </div>
+
+  <div class="card">
+    <div id="muteState" class="muted-state">— sin capturar —</div>
+    <div class="meter"><div id="meterBar"></div></div>
+    <p class="hint">Nivel de audio entrante. Si baja a 0 pero <code>muted=false</code>, es silencio "tipo JBL". Si <code>muted=true</code>, Chrome lo trata como silenciado por el sistema (lo que dispara Meet).</p>
+  </div>
+
+  <div class="card">
+    <div class="grid">
+      <div>track.muted</div>   <div id="muted">—</div>
+      <div>track.enabled</div> <div id="enabled">—</div>
+      <div>readyState</div>    <div id="ready">—</div>
+      <div>dispositivo</div>   <div id="label">—</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <strong>Registro de eventos</strong> <span class="hint">(mute / unmute con marca de tiempo)</span>
+    <div id="log"></div>
+  </div>
+
+<script>
+const $ = id => document.getElementById(id);
+let stream, track, audioCtx, analyser, raf;
+
+function ts() {
+  const d = new Date();
+  return d.toLocaleTimeString('es-AR', {hour12:false}) + '.' + String(d.getMilliseconds()).padStart(3,'0');
+}
+function log(msg, cls='') {
+  const line = document.createElement('div');
+  if (cls) line.className = cls;
+  line.textContent = `[${ts()}] ${msg}`;
+  $('log').prepend(line);
+}
+
+function refresh() {
+  if (!track) return;
+  const m = track.muted;
+  $('muted').textContent   = m;
+  $('enabled').textContent = track.enabled;
+  $('ready').textContent   = track.readyState;
+  const box = $('muteState');
+  box.textContent = m ? 'muted = TRUE  (Chrome lo ve silenciado)' : 'muted = false  (Chrome ve audio)';
+  box.className = 'muted-state ' + (m ? 'is-muted' : 'is-live');
+}
+
+// Secure-context check (getUserMedia needs https or localhost)
+if (!window.isSecureContext) {
+  $('ctx-warn').textContent = '⚠️ Abrí esta página por http://localhost para que el micrófono funcione (file:// no alcanza).';
+}
+
+async function listDevices() {
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const inputs = devices.filter(d => d.kind === 'audioinput');
+  const sel = $('devices');
+  sel.innerHTML = '';
+  for (const d of inputs) {
+    const o = document.createElement('option');
+    o.value = d.deviceId;
+    o.textContent = d.label || `Micrófono ${sel.length+1}`;
+    sel.appendChild(o);
+  }
+  sel.style.display = inputs.length ? 'inline-block' : 'none';
+}
+
+async function start(deviceId) {
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  const constraints = { audio: deviceId ? { deviceId: { exact: deviceId } } : true, video: false };
+  stream = await navigator.mediaDevices.getUserMedia(constraints);
+  track = stream.getAudioTracks()[0];
+  $('label').textContent = track.label;
+  log('Captura iniciada: ' + track.label);
+  log('Estado inicial: muted=' + track.muted + ', enabled=' + track.enabled);
+
+  track.addEventListener('mute',   () => { log('▼ evento MUTE   (track.muted → true)',  'ev-mute');   refresh(); });
+  track.addEventListener('unmute', () => { log('▲ evento UNMUTE (track.muted → false)', 'ev-unmute'); refresh(); });
+
+  // Poll as a backstop in case an event is missed.
+  setInterval(refresh, 200);
+  refresh();
+  await listDevices();
+  setupMeter();
+}
+
+function setupMeter() {
+  audioCtx = audioCtx || new AudioContext();
+  const src = audioCtx.createMediaStreamSource(stream);
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 1024;
+  src.connect(analyser);
+  const buf = new Float32Array(analyser.fftSize);
+  cancelAnimationFrame(raf);
+  (function tick() {
+    analyser.getFloatTimeDomainData(buf);
+    let sum = 0;
+    for (const v of buf) sum += v*v;
+    const rms = Math.sqrt(sum / buf.length);
+    $('meterBar').style.width = Math.min(100, rms * 400) + '%';
+    raf = requestAnimationFrame(tick);
+  })();
+}
+
+$('start').addEventListener('click', () => start().catch(e => log('ERROR: ' + e.message)));
+$('devices').addEventListener('change', e => start(e.target.value).catch(err => log('ERROR: ' + err.message)));
+</script>
+</body>
+</html>
