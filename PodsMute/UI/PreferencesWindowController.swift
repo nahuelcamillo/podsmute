@@ -65,6 +65,15 @@ final class PreferencesWindowController: NSWindowController, NSWindowDelegate {
         muteRecorder.onChange = { AppSettings.shared.muteShortcut = $0 }
         soundRecorder.onChange = { AppSettings.shared.toggleSoundShortcut = $0 }
 
+        // Keep the checkbox in sync if the tone is toggled elsewhere (menu/hotkey).
+        NotificationCenter.default.addObserver(
+            forName: .podsMuteToneEnabledChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.toneCheckbox.state = AppSettings.shared.muteToneEnabled ? .on : .off
+        }
+
         let grid = NSGridView(views: [
             [muteLabel, muteRecorder],
             [soundLabel, soundRecorder],

@@ -14,6 +14,9 @@ import Foundation
 extension Notification.Name {
     /// Posted when a configurable shortcut changes, so hotkeys can re-register.
     static let podsMuteShortcutsChanged = Notification.Name("PodsMuteShortcutsChanged")
+    /// Posted when the mute-tone preference changes, so every UI that shows it
+    /// (menu item, Preferences checkbox) can stay in sync.
+    static let podsMuteToneEnabledChanged = Notification.Name("PodsMuteToneEnabledChanged")
 }
 
 final class AppSettings {
@@ -45,7 +48,11 @@ final class AppSettings {
     /// Whether to play our distinctive mute/unmute audio cue.
     var muteToneEnabled: Bool {
         get { defaults.bool(forKey: Keys.muteToneEnabled) }
-        set { defaults.set(newValue, forKey: Keys.muteToneEnabled) }
+        set {
+            guard newValue != muteToneEnabled else { return }
+            defaults.set(newValue, forKey: Keys.muteToneEnabled)
+            NotificationCenter.default.post(name: .podsMuteToneEnabledChanged, object: nil)
+        }
     }
 
     /// Shortcut to toggle mute. nil means "no shortcut assigned".

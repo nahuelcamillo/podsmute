@@ -213,7 +213,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             AppSettings.shared.muteToneEnabled.toggle()
             let enabled = AppSettings.shared.muteToneEnabled
             print("[AppDelegate] Sound shortcut -> cue enabled = \(enabled)")
-            self.statusBarController.syncToneMenuItem()
+            // Menu/checkbox sync happens via .podsMuteToneEnabledChanged.
             if enabled { self.toneService.play(muted: false) }
         }
     }

@@ -200,6 +200,15 @@ final class StatusBarController {
         ) { [weak self] _ in
             self?.updateIcon()
         }
+
+        // Keep the cue menu item in sync no matter where it was toggled.
+        NotificationCenter.default.addObserver(
+            forName: .podsMuteToneEnabledChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.syncToneMenuItem()
+        }
     }
 
     // MARK: - UI Updates
@@ -321,8 +330,8 @@ final class StatusBarController {
     }
 
     @objc private func toggleMuteTone(_ sender: NSMenuItem) {
+        // The checkmark updates via .podsMuteToneEnabledChanged observer.
         AppSettings.shared.muteToneEnabled.toggle()
-        sender.state = AppSettings.shared.muteToneEnabled ? .on : .off
     }
 
     /// Refresh the cue menu item checkmark (e.g. after toggling via hotkey).
