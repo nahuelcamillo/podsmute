@@ -186,25 +186,33 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupHotKeys() {
         hotKeyService.start()
+        registerShortcuts()
+        // Re-register whenever the user edits a shortcut in Preferences.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(shortcutsChanged),
+            name: .podsMuteShortcutsChanged, object: nil)
+    }
 
-        // ⌥⌘M: toggle mute. Mutes via CoreAudio directly (not the stem gesture),
-        // so it works without AirPods and does NOT trigger the system banner.
-        hotKeyService.register(keyCode: HotKeyCode.m,
-                               modifiers: HotKeyMod.option | HotKeyMod.command) { [weak self] in
+    @objc private func shortcutsChanged() {
+        hotKeyService.unregisterAll()
+        registerShortcuts()
+    }
+
+    /// Register the (configurable) global shortcuts from preferences.
+    /// - Mute: toggles via CoreAudio directly (works without AirPods, no banner).
+    /// - Sound: toggles the cue; plays a sample when turned on, silence when off.
+    private func registerShortcuts() {
+        hotKeyService.register(AppSettings.shared.muteShortcut) { [weak self] in
             guard let self = self else { return }
             self.audioController.toggleMute()
-            print("[AppDelegate] Hotkey ⌥⌘M -> mute = \(self.audioController.isMuted)")
+            print("[AppDelegate] Mute shortcut -> mute = \(self.audioController.isMuted)")
             self.presentMuteFeedback()
         }
-
-        // ⌥⌘S: toggle the audio cue. If turned on, play a sample so the change
-        // is confirmed by ear; silence confirms it was turned off.
-        hotKeyService.register(keyCode: HotKeyCode.s,
-                               modifiers: HotKeyMod.option | HotKeyMod.command) { [weak self] in
+        hotKeyService.register(AppSettings.shared.toggleSoundShortcut) { [weak self] in
             guard let self = self else { return }
             AppSettings.shared.muteToneEnabled.toggle()
             let enabled = AppSettings.shared.muteToneEnabled
-            print("[AppDelegate] Hotkey ⌥⌘S -> cue enabled = \(enabled)")
+            print("[AppDelegate] Sound shortcut -> cue enabled = \(enabled)")
             self.statusBarController.syncToneMenuItem()
             if enabled { self.toneService.play(muted: false) }
         }

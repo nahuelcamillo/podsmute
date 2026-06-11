@@ -52,14 +52,24 @@ el manejo del banner del sistema.
 
 ### 7. Atajos de teclado globales — `HotKeyService`
 - Carbon `RegisterEventHotKey` (sin permiso de Accesibilidad, consume el combo).
-- `⌥⌘M` = toggle mute (por CoreAudio directo → **no dispara el banner**, funciona sin
-  AirPods); `⌥⌘S` = toggle del tono (suena al activar, silencio al desactivar).
-- **TODO**: hacer los atajos configurables (hoy hardcodeados) — parte del futuro
-  sistema de Preferencias.
+- Defaults: `⌥⌘M` = toggle mute (por CoreAudio directo → **no dispara el banner**,
+  funciona sin AirPods); `⌥⌘S` = toggle del tono (suena al activar, silencio al desactivar).
+- **Configurables** desde la ventana de Preferencias (ver abajo). Al cambiar un atajo,
+  `AppSettings` postea `.podsMuteShortcutsChanged` y `AppDelegate` re-registra (`unregisterAll`).
 
-### 8. Preferencias — `AppSettings`
-- Singleton sobre `UserDefaults`, centralizado para crecer. Hoy: `muteToneEnabled`.
-- Nombrado `AppSettings` (no `Settings`) para no chocar con `SwiftUI.Settings`.
+### 8. Preferencias — `AppSettings` + ventana
+- `AppSettings`: singleton sobre `UserDefaults`, centralizado. Hoy: `muteToneEnabled`,
+  `muteShortcut`, `toggleSoundShortcut`. Nombrado `AppSettings` (no `Settings`) para no
+  chocar con `SwiftUI.Settings`.
+- `Shortcut`: modelo (keyCode + modifiers Carbon) con conversión Cocoa↔Carbon,
+  `displayString` (⌥⌘M) y serialización a UserDefaults. keyCode es común a NSEvent y Carbon.
+- `ShortcutRecorderView`: control "click para grabar" — captura el próximo keyDown con
+  `addLocalMonitorForEvents`, Esc cancela, × limpia. Requiere ≥1 modificador (cmd/opt/ctrl).
+- `PreferencesWindowController`: ventana AppKit (sin xib). Como la app es `.accessory`,
+  pasa a `.regular` mientras la ventana está abierta (para recibir foco de teclado) y
+  vuelve a `.accessory` al cerrar. Abrir desde el menú → "Preferences…" (⌘,).
+- Detalle menor pendiente: el toggle de sonido está en el menú Y en la ventana; no se
+  sincronizan en vivo entre sí (cada uno lee al abrirse). Se consolida al pulir la UI.
 
 ### 9. Banner del sistema — `BannerKiller`
 El banner "Microphone On/Off" lo postea `cloudpaird`

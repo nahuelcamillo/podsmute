@@ -134,6 +134,15 @@ final class StatusBarController {
         menu.addItem(toneItem)
         toneMenuItem = toneItem
 
+        // Preferences window (configurable shortcuts, etc.)
+        let prefsItem = NSMenuItem(
+            title: "Preferences…",
+            action: #selector(openPreferences),
+            keyEquivalent: ","
+        )
+        prefsItem.target = self
+        menu.addItem(prefsItem)
+
         menu.addItem(NSMenuItem.separator())
 
         // About
@@ -319,6 +328,10 @@ final class StatusBarController {
     /// Refresh the cue menu item checkmark (e.g. after toggling via hotkey).
     func syncToneMenuItem() {
         toneMenuItem?.state = AppSettings.shared.muteToneEnabled ? .on : .off
+    }
+
+    @objc private func openPreferences() {
+        PreferencesWindowController.shared.show()
     }
 
     @objc private func quit() {
