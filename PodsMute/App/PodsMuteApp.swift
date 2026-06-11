@@ -17,6 +17,10 @@ enum PodsMuteMain {
     static var delegate: AppDelegate?
 
     static func main() {
+        // Unbuffered stdout so logs reach the LaunchAgent log file live
+        // (without a TTY, stdout is block-buffered and would never flush).
+        setbuf(stdout, nil)
+
         let app = NSApplication.shared
         let delegate = AppDelegate()
         Self.delegate = delegate
