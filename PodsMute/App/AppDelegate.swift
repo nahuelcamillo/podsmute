@@ -23,6 +23,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Services
 
     private var audioController: AudioMuteController!
+    private var muteCoordinator: MuteCoordinator!
     private var audioAccessoryMonitor: AudioAccessoryMonitor!
     private var muteGestureService: MuteGestureService!
     private var micUsageMonitor: MicUsageMonitor!
@@ -31,8 +32,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotKeyService: HotKeyService!
     private var statusBarController: StatusBarController!
     private var sigtermSource: DispatchSourceSignal?
-    // SPIKE: control the audio bridge by signal while testing.
-    private var usr1Source: DispatchSourceSignal?
+    // Debug hook: SIGUSR2 toggles mute as if the hotkey fired (no keyboard
+    // or AirPods needed when testing over SSH / scripts).
     private var usr2Source: DispatchSourceSignal?
 
     // Keep reference to BluetoothManager for device detection (status display)
@@ -62,26 +63,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         sigtermSource?.setEventHandler { NSApp.terminate(nil) }
         sigtermSource?.resume()
 
-        // SPIKE: SIGUSR1 toggles the AirPods→BlackHole bridge; SIGUSR2 toggles
-        // its mute. Lets us validate the virtual-mic approach before wiring it
-        // to the gesture.
-        signal(SIGUSR1, SIG_IGN)
-        usr1Source = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
-        usr1Source?.setEventHandler {
-            if AudioBridge.shared.running {
-                AudioBridge.shared.stop()
-            } else {
-                AudioBridge.shared.start(inputMatch: "airpods", outputMatch: "blackhole")
-            }
-            print("[AppDelegate] bridge running = \(AudioBridge.shared.running)")
-        }
-        usr1Source?.resume()
-
         signal(SIGUSR2, SIG_IGN)
         usr2Source = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: .main)
-        usr2Source?.setEventHandler {
-            AudioBridge.shared.muted.toggle()
-            print("[AppDelegate] bridge muted = \(AudioBridge.shared.muted)")
+        usr2Source?.setEventHandler { [weak self] in
+            guard let self = self else { return }
+            self.muteCoordinator.toggleMute()
+            print("[AppDelegate] SIGUSR2 -> muted = \(self.muteCoordinator.isMuted)")
+            self.presentMuteFeedback()
         }
         usr2Source?.resume()
 
@@ -94,11 +82,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         print("[AppDelegate] Application terminating...")
 
         // Restore mic to unmuted state if it was muted by this app
-        if audioController.isMuted {
+        if muteCoordinator.isMuted {
             print("[AppDelegate] Restoring microphone to unmuted state...")
-            audioController.setMute(false)
+            muteCoordinator.setMute(false)
         }
 
+        AudioBridge.shared.stop()
         audioAccessoryMonitor?.stopMonitoring()
         micUsageMonitor?.stop()
         muteGestureService?.stop()
@@ -126,6 +115,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Create external mic usage monitor (arms the gesture only during calls)
         micUsageMonitor = MicUsageMonitor()
 
+        // Single mute entry point: stealth bridge during calls, HAL flag otherwise
+        muteCoordinator = MuteCoordinator(
+            audioController: audioController,
+            micUsageMonitor: micUsageMonitor
+        )
+
         // Create the system banner dismisser (needs Accessibility permission)
         bannerKiller = BannerKiller()
         bannerKiller.requestPermission()
@@ -138,9 +133,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Create status bar controller
         statusBarController = StatusBarController(
-            audioController: audioController,
+            muteCoordinator: muteCoordinator,
             bluetoothManager: bluetoothManager
         )
+
+        // Honor the stealth toggle immediately when changed mid-call.
+        NotificationCenter.default.addObserver(
+            forName: .podsMuteStealthModeChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.muteCoordinator.stealthSettingChanged()
+        }
     }
 
     private func setupAudioAccessoryMonitoring() {
@@ -151,9 +153,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             print("[AppDelegate] AirPods mute state notification received!")
 
             // Toggle system mute when AirPods triggers mute
-            self.audioController.toggleMute()
-            self.statusBarController.updateIcon()
-            MuteHUD.shared.show(muted: self.audioController.isMuted)
+            self.muteCoordinator.toggleMute()
+            self.presentMuteFeedback()
         }
 
         // Debug: log all notifications
@@ -176,8 +177,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // mute stays phase-locked with the AirPods confirmation tones.
         muteGestureService.onGesture = { [weak self] muted in
             guard let self = self else { return }
-            self.audioController.setMute(muted)
-            print("[AppDelegate] Gesture -> system-wide mute = \(self.audioController.isMuted)")
+            // The coordinator syncs the process mute back to the system on
+            // every change; that echo lands here with the state we already
+            // hold. A real stem press always carries a NEW state.
+            guard muted != self.muteCoordinator.isMuted else {
+                print("[AppDelegate] Gesture echo (muted=\(muted)) - ignored")
+                return
+            }
+            self.muteCoordinator.setMute(muted)
+            print("[AppDelegate] Gesture -> mute = \(self.muteCoordinator.isMuted)")
             self.presentMuteFeedback()
             // The system banner spawns with the gesture; hunt it down now (opt-out)
             if AppSettings.shared.bannerKillerEnabled {
@@ -188,21 +196,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Arm the gesture only while another app captures the mic. This keeps
         // the AirPods out of call mode (HFP) when idle: music quality stays
         // intact and the stem keeps doing play/pause outside of calls.
+        // The stealth bridge shares this exact lifecycle.
         micUsageMonitor.onChange = { [weak self] othersCapturing in
             guard let self = self else { return }
             if othersCapturing {
                 print("[AppDelegate] External mic usage detected - arming gesture")
                 self.muteGestureService.start()
+                self.muteCoordinator.callDidStart()
             } else {
                 print("[AppDelegate] No external mic usage - disarming gesture")
                 self.muteGestureService.stop()
-                // Leave the mic usable for the next meeting.
-                if self.audioController.isMuted {
-                    self.audioController.setMute(false)
-                    self.statusBarController.updateIcon()
-                }
+                // Tears the bridge down and leaves the mic open for next time.
+                self.muteCoordinator.callDidEnd()
             }
         }
+
+        // Mid-call changes to WHICH devices other apps capture feed the
+        // stealth defense (an app capturing the real mic bypasses the bridge).
+        micUsageMonitor.onCapturedDevicesChange = { [weak self] _ in
+            self?.muteCoordinator.externalCaptureDevicesChanged()
+        }
+
         // The initial check fires onChange if a call is already in progress.
         micUsageMonitor.start()
     }
@@ -229,8 +243,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func registerShortcuts() {
         hotKeyService.register(AppSettings.shared.muteShortcut) { [weak self] in
             guard let self = self else { return }
-            self.audioController.toggleMute()
-            print("[AppDelegate] Mute shortcut -> mute = \(self.audioController.isMuted)")
+            self.muteCoordinator.toggleMute()
+            print("[AppDelegate] Mute shortcut -> mute = \(self.muteCoordinator.isMuted)")
             self.presentMuteFeedback()
         }
         hotKeyService.register(AppSettings.shared.toggleSoundShortcut) { [weak self] in
@@ -246,9 +260,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// Shared mute feedback: icon, capture-proof HUD, and the optional cue.
     private func presentMuteFeedback() {
         statusBarController.updateIcon()
-        MuteHUD.shared.show(muted: audioController.isMuted)
+        MuteHUD.shared.show(muted: muteCoordinator.isMuted)
         if AppSettings.shared.muteToneEnabled {
-            toneService.play(muted: audioController.isMuted)
+            toneService.play(muted: muteCoordinator.isMuted)
         }
     }
 

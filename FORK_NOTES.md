@@ -99,6 +99,51 @@ Ajustes, y editar `com.apple.ncprefs` no tiene efecto).
   recuadro del banner no sirve (NC lo reposiciona).
 - **Requiere permiso de Accesibilidad** para PodsMute.
 
+### 10. Stealth Mute — `AudioBridge` + `MuteCoordinator`
+
+**Problema**: mutear con el flag HAL (`kAudioDevicePropertyMute`) es detectable: Chrome
+lo refleja en `MediaStreamTrack.muted` y Meet muestra "El sistema silenció el micrófono"
+(y en mutes largos auto-mutea sin auto-desmutear). Bajar el volumen de entrada a 0 no
+sirve con AirPods (el modo HFP lo ignora).
+
+**Solución**: un mic virtual. `AudioBridge` captura el **default input** (AirPods) y lo
+reproduce en **BlackHole**; la app de meeting captura de BlackHole. Al mutear, el bridge
+deja de reenviar → la app recibe silencio **sin ningún flag de mute** → indetectable.
+Validado en Meet real (jun 2026).
+
+- **Activación automática**: el bridge comparte el ciclo de vida del armado del gesto —
+  `MicUsageMonitor` detecta captura externa → sube; nadie captura → baja (los AirPods no
+  quedan en HFP fuera de llamadas).
+- **`MuteCoordinator`** es el punto único de mute (stem / atajo / menú). Con bridge
+  corriendo togglea `bridge.muted`; sin bridge, flag HAL clásico (fallback automático,
+  también si BlackHole no está instalado).
+- **Defensa anti-bypass**: si otro proceso captura un device real directamente (no
+  BlackHole — p.ej. Zoom con los AirPods como mic), el mute del bridge no lo silencia;
+  el coordinator detecta eso vía `kAudioProcessPropertyDevices` (scope input) y aplica
+  **también** el flag HAL. Preferimos que Meet "vea" el mute antes que quedar audible
+  creyéndose muteado. Se re-evalúa si cambia el set de devices capturados (poll 1s).
+- **Sincronización del mute por proceso**: cada cambio llama
+  `AVAudioApplication.setInputMuted` para que el estado que el sistema le atribuye al
+  proceso siga al nuestro. Dos motivos: el stem togglea desde el estado que el sistema
+  cree (sin esto, mute por atajo + press del stem quedaban fuera de fase), y con bridge
+  el process-mute silencia nuestra propia captura (capa extra de silencio real). El
+  `setInputMuted` programático NO dispara el banner, pero SÍ ecoa en nuestro handler del
+  gesto: el AppDelegate ignora ecos (estado igual al actual).
+- **Robustez**: restart automático ante `AVAudioEngineConfigurationChange` (AirPods se
+  van a mitad de llamada → sigue con el nuevo default input); guard anti-loop si el
+  default input ES BlackHole (no bridgear el device contra sí mismo).
+- **Configuración**: Preferences → "Stealth Mute" (checkbox, default on; muestra si
+  BlackHole está instalado o guía a instalarlo — `brew install blackhole-2ch` o
+  existential.audio/blackhole). El menú de la barra muestra "Stealth mute: active"
+  mientras el bridge corre. En la app de meeting hay que elegir **BlackHole 2ch** como
+  micrófono una vez por app.
+- **Debug**: `kill -USR2 <pid>` togglea el mute como si fuera el atajo (sin teclado ni
+  AirPods).
+- Detalles de formato: tap con `format: nil` + `AVAudioConverter` lazy (el formato HFP
+  real solo se conoce con el primer buffer); solo se pinea el engine de PLAYBACK a
+  BlackHole con `auAudioUnit.setDeviceID` (pinear el capture da -10851; captura siempre
+  del default input).
+
 ## Build (sin Xcode)
 
 ```bash
@@ -120,8 +165,11 @@ launchctl load   ~/Library/LaunchAgents/com.podsmute.app.plist   # activar
 
 ## Herramientas de diagnóstico (`tools/`)
 
-- `audioctl` — CLI de CoreAudio: `list`, `set-input <substr>`, `mute <on|off|status>`, `running`.
+- `audioctl` — CLI de CoreAudio: `list`, `set-input <substr>`, `mute <on|off|status>`,
+  `running`, `inputvol [0..1]`, `procs` (qué procesos capturan y de qué device).
 - `winls` / `winwatch` — listan/observan ventanas en pantalla (se usaron para ubicar el banner).
+- `mic-diagnostic.html` — página getUserMedia que muestra `track.muted`/eventos/medidor
+  (servir con `python3 -m http.server`); con ella se determinó qué detecta Chrome.
 
 ## Permisos necesarios
 

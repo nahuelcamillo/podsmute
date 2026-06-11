@@ -24,10 +24,14 @@ final class PreferencesWindowController: NSWindowController, NSWindowDelegate {
     private let bannerCheckbox = NSButton(checkboxWithTitle: "Hide system mute banner during screen share",
                                           target: nil, action: nil)
     private let volumeRow = NSStackView()
+    private let stealthCheckbox = NSButton(checkboxWithTitle: "Mute through a virtual mic during calls (undetectable by meeting apps)",
+                                           target: nil, action: nil)
+    private let stealthStatusLabel = NSTextField(wrappingLabelWithString: "")
+    private let blackHoleButton = NSButton(title: "Get BlackHole…", target: nil, action: nil)
 
     private init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 440, height: 340),
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 470),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -53,7 +57,9 @@ final class PreferencesWindowController: NSWindowController, NSWindowDelegate {
         toneCheckbox.state = AppSettings.shared.muteToneEnabled ? .on : .off
         volumeSlider.doubleValue = AppSettings.shared.toneVolume
         bannerCheckbox.state = AppSettings.shared.bannerKillerEnabled ? .on : .off
+        stealthCheckbox.state = AppSettings.shared.stealthMuteEnabled ? .on : .off
         updateVolumeEnabled()
+        updateStealthStatus()
         window?.center()
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
@@ -112,12 +118,32 @@ final class PreferencesWindowController: NSWindowController, NSWindowDelegate {
         volumeRow.edgeInsets = NSEdgeInsets(top: 0, left: 20, bottom: 0, right: 0)
         volumeRow.setViews([lowIcon, volumeSlider, highIcon], in: .leading)
 
+        stealthCheckbox.target = self
+        stealthCheckbox.action = #selector(toggleStealth)
+
+        blackHoleButton.target = self
+        blackHoleButton.action = #selector(openBlackHolePage)
+
+        stealthStatusLabel.font = .systemFont(ofSize: 11)
+        stealthStatusLabel.textColor = .secondaryLabelColor
+        stealthStatusLabel.translatesAutoresizingMaskIntoConstraints = false
+        stealthStatusLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 380).isActive = true
+
+        // Indent the status + install button under the checkbox.
+        let stealthDetailRow = NSStackView(views: [stealthStatusLabel, blackHoleButton])
+        stealthDetailRow.orientation = .vertical
+        stealthDetailRow.alignment = .leading
+        stealthDetailRow.spacing = 6
+        stealthDetailRow.edgeInsets = NSEdgeInsets(top: 0, left: 20, bottom: 0, right: 0)
+
         let stack = NSStackView(views: [
             shortcutsHeader, grid,
             NSBox.separator(),
             sectionLabel("Audio Cue"), toneCheckbox, volumeRow,
             NSBox.separator(),
             sectionLabel("System Banner"), bannerCheckbox,
+            NSBox.separator(),
+            sectionLabel("Stealth Mute"), stealthCheckbox, stealthDetailRow,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -157,6 +183,23 @@ final class PreferencesWindowController: NSWindowController, NSWindowDelegate {
         volumeRow.alphaValue = enabled ? 1.0 : 0.4
     }
 
+    /// Reflect whether BlackHole is installed (re-checked on every open, so
+    /// installing it while the app runs needs no restart).
+    private func updateStealthStatus() {
+        if AudioBridge.isInstalled {
+            stealthStatusLabel.stringValue =
+                "BlackHole detected. In your meeting app, select “BlackHole 2ch” " +
+                "as the microphone (once per app) — PodsMute feeds your real mic into it."
+            blackHoleButton.isHidden = true
+        } else {
+            stealthStatusLabel.stringValue =
+                "Requires BlackHole, a free virtual audio driver " +
+                "(or install it with: brew install blackhole-2ch). " +
+                "Until then, the regular system mute is used."
+            blackHoleButton.isHidden = false
+        }
+    }
+
     // MARK: - Actions
 
     @objc private func toggleTone() {
@@ -165,6 +208,16 @@ final class PreferencesWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func toggleBanner() {
         AppSettings.shared.bannerKillerEnabled = (bannerCheckbox.state == .on)
+    }
+
+    @objc private func toggleStealth() {
+        AppSettings.shared.stealthMuteEnabled = (stealthCheckbox.state == .on)
+    }
+
+    @objc private func openBlackHolePage() {
+        if let url = URL(string: "https://existential.audio/blackhole/") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     @objc private func volumeChanged() {

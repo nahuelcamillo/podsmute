@@ -17,6 +17,9 @@ extension Notification.Name {
     /// Posted when the mute-tone preference changes, so every UI that shows it
     /// (menu item, Preferences checkbox) can stay in sync.
     static let podsMuteToneEnabledChanged = Notification.Name("PodsMuteToneEnabledChanged")
+    /// Posted when the stealth-mute preference changes, so the bridge can be
+    /// brought up/down immediately if a call is already running.
+    static let podsMuteStealthModeChanged = Notification.Name("PodsMuteStealthModeChanged")
 }
 
 final class AppSettings {
@@ -31,6 +34,7 @@ final class AppSettings {
         static let toggleSoundShortcut = "toggleSoundShortcut"
         static let bannerKillerEnabled = "bannerKillerEnabled"
         static let toneVolume = "toneVolume"
+        static let stealthMuteEnabled = "stealthMuteEnabled"
     }
 
     /// Default cue volume (0...1). ~0.44 reproduces the validated loudness.
@@ -49,7 +53,19 @@ final class AppSettings {
             Keys.toggleSoundShortcut: Self.defaultToggleSoundShortcut.dictionary,
             Keys.bannerKillerEnabled: true,
             Keys.toneVolume: Self.defaultToneVolume,
+            Keys.stealthMuteEnabled: true,
         ])
+    }
+
+    /// Whether to bridge the mic into BlackHole during calls so muting is
+    /// undetectable by meeting apps. A no-op until BlackHole is installed.
+    var stealthMuteEnabled: Bool {
+        get { defaults.bool(forKey: Keys.stealthMuteEnabled) }
+        set {
+            guard newValue != stealthMuteEnabled else { return }
+            defaults.set(newValue, forKey: Keys.stealthMuteEnabled)
+            NotificationCenter.default.post(name: .podsMuteStealthModeChanged, object: nil)
+        }
     }
 
     /// Whether to hide the system "Microphone On/Off" banner (needs Accessibility).

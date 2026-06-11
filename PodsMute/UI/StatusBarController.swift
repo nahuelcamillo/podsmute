@@ -14,7 +14,7 @@ final class StatusBarController {
     // MARK: - Properties
 
     private var statusItem: NSStatusItem
-    private let audioController: AudioMuteController
+    private let muteCoordinator: MuteCoordinator
     private let bluetoothManager: BluetoothManager
 
     private var cancellables = Set<AnyCancellable>()
@@ -25,12 +25,13 @@ final class StatusBarController {
         case muteStatus = 100
         case connectionStatus = 101
         case deviceName = 102
+        case stealthStatus = 103
     }
 
     // MARK: - Initialization
 
-    init(audioController: AudioMuteController, bluetoothManager: BluetoothManager) {
-        self.audioController = audioController
+    init(muteCoordinator: MuteCoordinator, bluetoothManager: BluetoothManager) {
+        self.muteCoordinator = muteCoordinator
         self.bluetoothManager = bluetoothManager
 
         // Create status bar item with variable length
@@ -69,6 +70,18 @@ final class StatusBarController {
         muteStatusItem.tag = MenuItemTag.muteStatus.rawValue
         muteStatusItem.isEnabled = false
         menu.addItem(muteStatusItem)
+
+        // Stealth mode indicator (only visible while the bridge runs)
+        let stealthItem = NSMenuItem(
+            title: "Stealth mute: active",
+            action: nil,
+            keyEquivalent: ""
+        )
+        stealthItem.tag = MenuItemTag.stealthStatus.rawValue
+        stealthItem.isEnabled = false
+        stealthItem.isHidden = true
+        stealthItem.image = NSImage(systemSymbolName: "shield.fill", accessibilityDescription: nil)
+        menu.addItem(stealthItem)
 
         // Toggle mute action
         let toggleItem = NSMenuItem(
@@ -168,10 +181,18 @@ final class StatusBarController {
 
     private func setupObservers() {
         // Observe mute state changes
-        audioController.$isMuted
+        muteCoordinator.$isMuted
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.updateIcon()
+                self?.updateMenuItems()
+            }
+            .store(in: &cancellables)
+
+        // Observe the stealth bridge starting/stopping
+        muteCoordinator.$stealthActive
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
                 self?.updateMenuItems()
             }
             .store(in: &cancellables)
@@ -217,10 +238,10 @@ final class StatusBarController {
     func updateIcon() {
         guard let button = statusItem.button else { return }
 
-        button.image = createStatusBarIcon(isMuted: audioController.isMuted)
+        button.image = createStatusBarIcon(isMuted: muteCoordinator.isMuted)
 
         // Update tooltip
-        let muteStatus = audioController.isMuted ? "Muted" : "Unmuted"
+        let muteStatus = muteCoordinator.isMuted ? "Muted" : "Unmuted"
         let connectionStatus = bluetoothManager.connectionState.displayName
         button.toolTip = "Microphone: \(muteStatus)\nAirPods: \(connectionStatus)"
     }
@@ -244,8 +265,8 @@ final class StatusBarController {
 
         // Update mute status with colored text
         if let muteItem = menu.item(withTag: MenuItemTag.muteStatus.rawValue) {
-            let status = audioController.isMuted ? "Muted" : "Unmuted"
-            let statusColor: NSColor = audioController.isMuted ? .systemRed : .systemGreen
+            let status = muteCoordinator.isMuted ? "Muted" : "Unmuted"
+            let statusColor: NSColor = muteCoordinator.isMuted ? .systemRed : .systemGreen
 
             // Create attributed string with colored status
             let fullText = "Microphone: \(status)"
@@ -258,11 +279,16 @@ final class StatusBarController {
             muteItem.attributedTitle = attributedTitle
 
             // Add indicator icon
-            if audioController.isMuted {
+            if muteCoordinator.isMuted {
                 muteItem.image = NSImage(systemSymbolName: "mic.slash", accessibilityDescription: nil)
             } else {
                 muteItem.image = NSImage(systemSymbolName: "mic", accessibilityDescription: nil)
             }
+        }
+
+        // Show the stealth indicator only while the bridge is live
+        if let stealthItem = menu.item(withTag: MenuItemTag.stealthStatus.rawValue) {
+            stealthItem.isHidden = !muteCoordinator.stealthActive
         }
 
         // Update connection status with colored text
@@ -322,7 +348,7 @@ final class StatusBarController {
     }
 
     @objc private func toggleMute() {
-        audioController.toggleMute()
+        muteCoordinator.toggleMute()
     }
 
     @objc private func reconnect() {

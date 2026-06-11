@@ -22,9 +22,22 @@ final class AudioBridge {
 
     static let shared = AudioBridge()
 
+    /// Substring identifying the virtual loopback driver in device names.
+    static let virtualDeviceNeedle = "blackhole"
+
+    /// Whether the virtual device (BlackHole) is installed right now.
+    static var isInstalled: Bool { virtualDeviceID != nil }
+
+    /// The virtual device's ID, if installed. BlackHole is a single loopback
+    /// device, so this same ID shows up on a meeting app's capture side.
+    static var virtualDeviceID: AudioDeviceID? {
+        deviceID(matching: virtualDeviceNeedle, input: false)
+    }
+
     // MARK: - State
 
     /// When true, audio is not forwarded → the virtual device gets silence.
+    /// Owned by MuteCoordinator; survives stop()/start() cycles on purpose.
     var muted = false
 
     private(set) var running = false
@@ -34,28 +47,41 @@ final class AudioBridge {
     private let player = AVAudioPlayerNode()
     private var converter: AVAudioConverter?
     private var outputFormat: AVAudioFormat?
+    private var restartPending = false
+
+    private init() {
+        // Engines renegotiate I/O when devices change (AirPods dropping
+        // mid-call turns the default input into the built-in mic); restart so
+        // the bridge follows the new device instead of going silent.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(engineConfigurationChanged(_:)),
+            name: .AVAudioEngineConfigurationChange, object: nil)
+    }
 
     // MARK: - Public
 
-    /// Start bridging from the input device to the output device (by name match).
-    /// - inputMatch: substring of the mic to capture (e.g. "airpods").
-    /// - outputMatch: substring of the virtual output (e.g. "blackhole").
+    /// Start bridging the default input device into the virtual device.
     @discardableResult
-    func start(inputMatch: String, outputMatch: String) -> Bool {
+    func start() -> Bool {
         guard !running else { return true }
 
-        guard let outDev = Self.deviceID(matching: outputMatch, input: false) else {
-            print("[AudioBridge] output device matching '\(outputMatch)' not found"); return false
+        guard let outDev = Self.virtualDeviceID else {
+            print("[AudioBridge] virtual device (BlackHole) not installed"); return false
+        }
+        // Capturing the default input while it IS the virtual device would
+        // feed the device back into itself.
+        guard Self.defaultInputID() != outDev else {
+            print("[AudioBridge] default input is the virtual device; not bridging"); return false
         }
         print("[AudioBridge] play dev=\(outDev) (capture uses default input)")
 
-        // Capture uses the default input device (caller pins it to the mic via
-        // audioctl). Only the playback engine needs to target BlackHole.
+        // Capture uses the default input device (the user's real mic). Only
+        // the playback engine needs to be pinned to BlackHole.
         guard setDevice(playbackEngine, deviceID: outDev, scopeInput: false) else {
             print("[AudioBridge] failed to pin playback device"); return false
         }
 
-        playbackEngine.attach(player)
+        if player.engine == nil { playbackEngine.attach(player) }
         let outFmt = playbackEngine.outputNode.inputFormat(forBus: 0)
         outputFormat = outFmt
         playbackEngine.connect(player, to: playbackEngine.outputNode, format: outFmt)
@@ -76,7 +102,7 @@ final class AudioBridge {
             player.play()
             try captureEngine.start()
             running = true
-            print("[AudioBridge] running")
+            print("[AudioBridge] running (muted=\(muted))")
             return true
         } catch {
             print("[AudioBridge] start failed: \(error)")
@@ -91,8 +117,28 @@ final class AudioBridge {
         captureEngine.stop()
         player.stop()
         playbackEngine.stop()
+        converter = nil
+        outputFormat = nil
         running = false
         print("[AudioBridge] stopped")
+    }
+
+    // MARK: - Device changes
+
+    @objc private func engineConfigurationChanged(_ note: Notification) {
+        guard let engine = note.object as? AVAudioEngine,
+              engine === captureEngine || engine === playbackEngine else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.running, !self.restartPending else { return }
+            self.restartPending = true
+            print("[AudioBridge] engine configuration changed; restarting")
+            // Let the HAL settle before rebuilding on the new device.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                self.restartPending = false
+                self.stop()
+                self.start()
+            }
+        }
     }
 
     // MARK: - Forwarding
@@ -136,6 +182,17 @@ final class AudioBridge {
             print("[AudioBridge] setDeviceID(\(deviceID)) failed: \(error)")
             return false
         }
+    }
+
+    /// The system default input device, or kAudioObjectUnknown.
+    static func defaultInputID() -> AudioDeviceID {
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var id: AudioDeviceID = kAudioObjectUnknown
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        _ = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &id)
+        return id
     }
 
     /// Find a device ID whose name contains `needle`, with input or output channels.
