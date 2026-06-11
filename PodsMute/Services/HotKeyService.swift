@@ -74,8 +74,23 @@ final class HotKeyService {
         }
     }
 
-    deinit {
+    /// Convenience: register from a Shortcut model (skips nil).
+    @discardableResult
+    func register(_ shortcut: Shortcut?, handler: @escaping () -> Void) -> Bool {
+        guard let shortcut = shortcut else { return false }
+        return register(keyCode: shortcut.keyCode,
+                        modifiers: shortcut.carbonModifiers, handler: handler)
+    }
+
+    /// Unregister every hotkey (e.g. before re-registering after a config change).
+    func unregisterAll() {
         for ref in refs where ref != nil { UnregisterEventHotKey(ref) }
+        refs.removeAll()
+        handlers.removeAll()
+    }
+
+    deinit {
+        unregisterAll()
         if let eventHandler = eventHandler { RemoveEventHandler(eventHandler) }
     }
 }
