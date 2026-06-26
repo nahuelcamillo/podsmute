@@ -34,6 +34,9 @@ final class BannerKiller {
     private var bannerPresentThisScan = false
     private var killedAt: Date?
     private var goneLogged = false
+    // The banner's Close action is a no-op, so attempt it once per hunt
+    // instead of re-firing it on every 30ms scan while the banner lives.
+    private var dismissAttempted = false
 
     // Off-screen window relocation state.
     private var movedWindow: AXUIElement?
@@ -68,6 +71,7 @@ final class BannerKiller {
         loggedNodes.removeAll()
         killedAt = nil
         goneLogged = false
+        dismissAttempted = false
 
         // Scan immediately - the banner is often already present by the time
         // the gesture handler runs, so waiting a tick only adds latency.
@@ -197,6 +201,10 @@ final class BannerKiller {
     // MARK: - Private Methods - Dismissal
 
     private func tryDismiss(_ element: AXUIElement, subrole: String, actions: [(String, String)]) {
+        // Close is a no-op (the banner lives out its ~1.2s either way); the
+        // off-screen move is what hides it. Attempt Close at most once per
+        // hunt rather than hammering it on every scan.
+        guard !dismissAttempted else { return }
         for (name, description) in actions {
             let d = description.lowercased()
             if forbiddenDescriptions.contains(where: { d.contains($0) }) { continue }
@@ -209,6 +217,7 @@ final class BannerKiller {
                 let latencyMs = Int(Date().timeIntervalSince(huntStartedAt) * 1000)
                 print("[BannerKiller] KILL via \(clean(name))('\(clean(description))') -> \(result == .success ? "OK" : "err \(result.rawValue)") (+\(latencyMs)ms)")
                 if result == .success {
+                    dismissAttempted = true
                     if killedAt == nil { killedAt = Date() }
                     return
                 }
