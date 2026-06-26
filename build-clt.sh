@@ -35,7 +35,19 @@ plutil -lint "$APP_DIR/Contents/Info.plist" > /dev/null
 printf 'APPL????' > "$APP_DIR/Contents/PkgInfo"
 cp AppIcon.icns "$APP_DIR/Contents/Resources/AppIcon.icns"
 
-echo "==> Codesigning (ad-hoc)..."
-codesign --force --sign - --identifier "$BUNDLE_ID" "$APP_DIR"
+# Firmar con una identidad ESTABLE si existe (ver tools/make-signing-cert.sh).
+# Con identidad estable el designated requirement no depende del cdhash, asi que
+# el permiso de Accesibilidad sobrevive a los rebuilds. Sin ella, cae a ad-hoc
+# (cdhash) y el permiso se pierde en cada recompilacion.
+SIGN_ID="${PODSMUTE_SIGN_ID:-PodsMute Self-Signed}"
+if security find-identity -p codesigning 2>/dev/null | grep -q "$SIGN_ID"; then
+    echo "==> Codesigning con identidad estable: $SIGN_ID"
+    codesign --force --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP_DIR"
+else
+    echo "==> [WARN] Identidad '$SIGN_ID' no encontrada; firmando ad-hoc."
+    echo "    [WARN] El permiso de Accesibilidad se perdera en cada rebuild."
+    echo "    [WARN] Para arreglarlo, una sola vez: ./tools/make-signing-cert.sh"
+    codesign --force --sign - --identifier "$BUNDLE_ID" "$APP_DIR"
+fi
 
 echo "==> Done: $APP_DIR"

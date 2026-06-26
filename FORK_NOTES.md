@@ -150,8 +150,28 @@ Validado en Meet real (jun 2026).
 ./build-clt.sh        # compila con swiftc y arma el .app (solo Command Line Tools)
 ```
 
-El permiso de Accesibilidad sobrevive a las recompilaciones (macOS lo asocia a la ruta
-+ bundle id), así que no hay que re-otorgarlo en cada build.
+### Firma de código y el permiso de Accesibilidad
+
+`build-clt.sh` firma con una identidad de code-signing **estable** si existe en el llavero
+(`PodsMute Self-Signed`); si no, cae a firma **ad-hoc** con un warning.
+
+Esto importa para el BannerKiller (sección 9): macOS identifica la app ante TCC por su
+*designated requirement*. Con firma **ad-hoc** ese requirement es el **cdhash** (el hash del
+binario), que cambia cada vez que recompilás con cambios de código → TCC deja de reconocer
+la app → **te vuelve a pedir Accesibilidad en cada build**. Con la identidad estable el
+requirement pasa a ser `identifier "com.podsmute.app" and certificate leaf = H"…"`,
+constante entre rebuilds → **el permiso sobrevive**.
+
+Crear la identidad (una sola vez; no requiere cuenta de Apple Developer):
+
+```bash
+./tools/make-signing-cert.sh   # genera un cert autofirmado y lo importa al llavero
+./build-clt.sh                 # recompila firmando con esa identidad
+# Otorgá Accesibilidad UNA última vez (el requirement cambió respecto del ad-hoc previo)
+```
+
+Verificación: `codesign -d -r- build/PodsMute.app` debe mostrar
+`designated => identifier "com.podsmute.app" and certificate leaf = H"…"` (no `cdhash …`).
 
 ## Arranque automático
 
