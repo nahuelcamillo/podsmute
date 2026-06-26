@@ -183,6 +183,21 @@ launchctl unload ~/Library/LaunchAgents/com.podsmute.app.plist   # desactivar
 launchctl load   ~/Library/LaunchAgents/com.podsmute.app.plist   # activar
 ```
 
+**Gotcha (firma de código / LWCR):** launchd "pinea" el code requirement del binario
+cuando se registra el job (managed LWCR). Si la firma del binario cambia y el requirement
+guardado queda viejo, al login launchd mata el proceso **al instante** con
+`Launch Constraint Violation` / `last exit reason = OS_REASON_CODESIGNING` → la app **no
+arranca sola** (y la abrís a mano sin notar que el auto-arranque está roto). Con firma
+**ad-hoc** esto se rompía en cada recompilación. Con la identidad estable ya no, pero al
+migrar hay que refrescar el requirement **una vez**:
+
+```bash
+launchctl bootout   gui/$(id -u)/com.podsmute.app
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.podsmute.app.plist
+```
+
+Diagnóstico: `launchctl print gui/$(id -u)/com.podsmute.app | grep -i "exit reason"`.
+
 ## Herramientas de diagnóstico (`tools/`)
 
 - `audioctl` — CLI de CoreAudio: `list`, `set-input <substr>`, `mute <on|off|status>`,
