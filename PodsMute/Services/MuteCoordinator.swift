@@ -50,6 +50,19 @@ final class MuteCoordinator: ObservableObject {
                 if self.isMuted != effective { self.isMuted = effective }
             }
             .store(in: &cancellables)
+
+        // A deferred bridge start (input not ready at call start) finishes
+        // after callDidStart already fell back to flag-mute: adopt stealth and
+        // re-apply the current mute so a mute pressed during the HFP handoff is
+        // honored (and the classic flag is cleared if no longer needed).
+        NotificationCenter.default.publisher(for: .podsMuteBridgeDidStart)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self = self, self.bridge.running else { return }
+                self.stealthActive = true
+                self.applyMute(self.isMuted)
+            }
+            .store(in: &cancellables)
     }
 
     // MARK: - Call lifecycle (driven by MicUsageMonitor)

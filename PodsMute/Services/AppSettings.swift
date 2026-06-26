@@ -20,6 +20,10 @@ extension Notification.Name {
     /// Posted when the stealth-mute preference changes, so the bridge can be
     /// brought up/down immediately if a call is already running.
     static let podsMuteStealthModeChanged = Notification.Name("PodsMuteStealthModeChanged")
+    /// Posted when a deferred AudioBridge start finally succeeds (the input
+    /// device was not ready at call start), so MuteCoordinator can reconcile
+    /// the stealth state and re-apply the current mute.
+    static let podsMuteBridgeDidStart = Notification.Name("PodsMuteBridgeDidStart")
 }
 
 final class AppSettings {

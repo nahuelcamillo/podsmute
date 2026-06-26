@@ -49,6 +49,12 @@ final class AudioBridge {
     private var outputFormat: AVAudioFormat?
     private var restartPending = false
 
+    // Deferred-start retry: the capture device's format can be invalid
+    // (0 Hz / 0 ch) for a beat while AirPods negotiate HFP at call start.
+    private var startRetries = 0
+    private let maxStartRetries = 6   // ~3s at 0.5s spacing, covers the HFP handoff
+    private var startGeneration = 0   // bumped on stop() to cancel pending retries
+
     private init() {
         // Engines renegotiate I/O when devices change (AirPods dropping
         // mid-call turns the default input into the built-in mic); restart so
@@ -73,7 +79,19 @@ final class AudioBridge {
         guard Self.defaultInputID() != outDev else {
             print("[AudioBridge] default input is the virtual device; not bridging"); return false
         }
-        print("[AudioBridge] play dev=\(outDev) (capture uses default input)")
+
+        // The capture node's native format is invalid (0 Hz / 0 ch) for a beat
+        // while the input renegotiates — typically AirPods switching to HFP the
+        // instant a call opens the mic. installTap(format: nil) below would
+        // throw an AVFAudio NSException (uncatchable from Swift) and abort the
+        // app, so wait for a valid format and retry instead of tapping a
+        // half-initialized node.
+        let inFmt = captureEngine.inputNode.outputFormat(forBus: 0)
+        guard inFmt.sampleRate > 0, inFmt.channelCount > 0 else {
+            scheduleStartRetry(reason: "input not ready (\(Int(inFmt.sampleRate))Hz/\(inFmt.channelCount)ch)")
+            return false
+        }
+        print("[AudioBridge] play dev=\(outDev) in=\(inFmt) (capture uses default input)")
 
         // Capture uses the default input device (the user's real mic). Only
         // the playback engine needs to be pinned to BlackHole.
@@ -102,7 +120,14 @@ final class AudioBridge {
             player.play()
             try captureEngine.start()
             running = true
+            let wasDeferred = startRetries > 0
+            startRetries = 0
             print("[AudioBridge] running (muted=\(muted))")
+            // A deferred start succeeds after the coordinator already fell back
+            // synchronously; tell it to adopt stealth and re-apply the mute.
+            if wasDeferred {
+                NotificationCenter.default.post(name: .podsMuteBridgeDidStart, object: self)
+            }
             return true
         } catch {
             print("[AudioBridge] start failed: \(error)")
@@ -112,6 +137,8 @@ final class AudioBridge {
     }
 
     func stop() {
+        startGeneration &+= 1   // cancel any pending deferred-start retry
+        startRetries = 0
         guard running else { return }
         captureEngine.inputNode.removeTap(onBus: 0)
         captureEngine.stop()
@@ -121,6 +148,25 @@ final class AudioBridge {
         outputFormat = nil
         running = false
         print("[AudioBridge] stopped")
+    }
+
+    /// Retry start() shortly: the input device was not ready (e.g. AirPods
+    /// mid-HFP-handoff). Bounded so a permanently invalid input (no mic
+    /// permission, no input device) falls back to classic flag-mute instead
+    /// of looping forever.
+    private func scheduleStartRetry(reason: String) {
+        guard startRetries < maxStartRetries else {
+            startRetries = 0
+            print("[AudioBridge] \(reason); gave up, classic flag-mute in effect")
+            return
+        }
+        startRetries += 1
+        let gen = startGeneration
+        print("[AudioBridge] \(reason); retry \(startRetries)/\(maxStartRetries) in 0.5s")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self = self, !self.running, self.startGeneration == gen else { return }
+            self.start()
+        }
     }
 
     // MARK: - Device changes
