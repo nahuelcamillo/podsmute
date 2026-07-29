@@ -232,12 +232,28 @@ Verificación: `codesign -d -r- build/PodsMute.app` debe mostrar
 
 ## Arranque automático
 
-LaunchAgent en `~/Library/LaunchAgents/com.podsmute.app.plist` (RunAtLoad, apunta al
-binario en `build/`). Logs en `~/Library/Logs/PodsMute.log`.
+LaunchAgent en `~/Library/LaunchAgents/com.podsmute.app.plist`, **generado** por
+`tools/install-launchagent.sh`. Logs en `~/Library/Logs/PodsMute.log`.
 
 ```bash
-launchctl unload ~/Library/LaunchAgents/com.podsmute.app.plist   # desactivar
-launchctl load   ~/Library/LaunchAgents/com.podsmute.app.plist   # activar
+./tools/install-launchagent.sh     # instalar / reinstalar (idempotente)
+```
+
+El plist no se versiona tal cual porque lleva rutas absolutas (el binario vive dentro del
+repo, los logs en el home). El script las resuelve desde la ubicación real del repo, así
+que el arranque automático sobrevive a un reinstall o a clonar en otra ruta/máquina. Hace
+`bootout` + `bootstrap` (no solo `bootstrap`) por el gotcha de abajo, y verifica que el
+proceso quedó vivo — si no, imprime el `last exit reason`.
+
+Contenido relevante que genera: `RunAtLoad`, y `KeepAlive` con `SuccessfulExit=false` para
+relanzar **solo ante crash** (AVFAudio lanza `NSException`s no atrapables desde Swift; ver
+sección 11), manteniendo que **Quit del menú queda quieto**.
+
+Activar / desactivar a mano:
+
+```bash
+launchctl bootout   gui/$(id -u)/com.podsmute.app   # desactivar
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.podsmute.app.plist
 ```
 
 **Gotcha (firma de código / LWCR):** launchd "pinea" el code requirement del binario
@@ -246,12 +262,9 @@ guardado queda viejo, al login launchd mata el proceso **al instante** con
 `Launch Constraint Violation` / `last exit reason = OS_REASON_CODESIGNING` → la app **no
 arranca sola** (y la abrís a mano sin notar que el auto-arranque está roto). Con firma
 **ad-hoc** esto se rompía en cada recompilación. Con la identidad estable ya no, pero al
-migrar hay que refrescar el requirement **una vez**:
-
-```bash
-launchctl bootout   gui/$(id -u)/com.podsmute.app
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.podsmute.app.plist
-```
+migrar hay que refrescar el requirement **una vez** — que es justamente lo que hace
+`./tools/install-launchagent.sh`. Correlo después de cada `./build-clt.sh` que cambie la
+firma.
 
 Diagnóstico: `launchctl print gui/$(id -u)/com.podsmute.app | grep -i "exit reason"`.
 
@@ -259,6 +272,7 @@ Diagnóstico: `launchctl print gui/$(id -u)/com.podsmute.app | grep -i "exit rea
 
 - `audioctl` — CLI de CoreAudio: `list`, `set-input <substr>`, `mute <on|off|status>`,
   `running`, `inputvol [0..1]`, `procs` (qué procesos capturan y de qué device).
+- `install-launchagent.sh` — genera e instala el LaunchAgent (ver "Arranque automático").
 - `winls` / `winwatch` — listan/observan ventanas en pantalla (se usaron para ubicar el banner).
 - `mic-diagnostic.html` — página getUserMedia que muestra `track.muted`/eventos/medidor
   (servir con `python3 -m http.server`); con ella se determinó qué detecta Chrome.
