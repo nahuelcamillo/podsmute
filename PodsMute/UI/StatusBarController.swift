@@ -9,13 +9,20 @@ import Cocoa
 import Combine
 
 /// Manages the menu bar status item with mic icon and dropdown menu.
-final class StatusBarController {
+final class StatusBarController: NSObject {
 
     // MARK: - Properties
 
     private var statusItem: NSStatusItem
     private let muteCoordinator: MuteCoordinator
     private let bluetoothManager: BluetoothManager
+
+    /// Whether the stem gesture is currently listening: nil when it is not
+    /// armed at all (no call in progress), true/false when armed.
+    var gestureIsLive: (() -> Bool?)?
+
+    /// Rebuild the stem gesture's mic tap (manual recovery from the menu).
+    var onRearmGesture: (() -> Void)?
 
     private var cancellables = Set<AnyCancellable>()
     private var toneMenuItem: NSMenuItem?
@@ -26,6 +33,7 @@ final class StatusBarController {
         case connectionStatus = 101
         case deviceName = 102
         case stealthStatus = 103
+        case gestureStatus = 104
     }
 
     // MARK: - Initialization
@@ -36,6 +44,8 @@ final class StatusBarController {
 
         // Create status bar item with variable length
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+
+        super.init()
 
         setupButton()
         setupMenu()
@@ -83,6 +93,19 @@ final class StatusBarController {
         stealthItem.image = NSImage(systemSymbolName: "shield.fill", accessibilityDescription: nil)
         menu.addItem(stealthItem)
 
+        // Stem gesture health (only shown during a call, i.e. while armed).
+        // An audio route change can kill the gesture while every other mute
+        // path keeps working, so surfacing it saves guessing.
+        let gestureItem = NSMenuItem(
+            title: "Stem gesture: --",
+            action: nil,
+            keyEquivalent: ""
+        )
+        gestureItem.tag = MenuItemTag.gestureStatus.rawValue
+        gestureItem.isEnabled = false
+        gestureItem.isHidden = true
+        menu.addItem(gestureItem)
+
         // Toggle mute action
         let toggleItem = NSMenuItem(
             title: "Toggle Mute",
@@ -91,6 +114,16 @@ final class StatusBarController {
         )
         toggleItem.target = self
         menu.addItem(toggleItem)
+
+        // Manual recovery for the stem gesture (the automatic re-arm should
+        // cover it, but during a meeting this beats restarting the app).
+        let rearmItem = NSMenuItem(
+            title: "Re-arm Stem Gesture",
+            action: #selector(rearmGesture),
+            keyEquivalent: ""
+        )
+        rearmItem.target = self
+        menu.addItem(rearmItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -176,6 +209,7 @@ final class StatusBarController {
         quitItem.target = self
         menu.addItem(quitItem)
 
+        menu.delegate = self
         statusItem.menu = menu
     }
 
@@ -291,6 +325,25 @@ final class StatusBarController {
             stealthItem.isHidden = !muteCoordinator.stealthActive
         }
 
+        // Stem gesture health: hidden outside calls, red when armed but dead.
+        if let gestureItem = menu.item(withTag: MenuItemTag.gestureStatus.rawValue) {
+            let live = gestureIsLive?()
+            gestureItem.isHidden = (live == nil)
+            if let live = live {
+                let statusText = live ? "listening" : "not listening"
+                let fullText = "Stem gesture: \(statusText)"
+                let attributed = NSMutableAttributedString(string: fullText)
+                attributed.addAttribute(
+                    .foregroundColor,
+                    value: live ? NSColor.systemGreen : NSColor.systemRed,
+                    range: (fullText as NSString).range(of: statusText))
+                gestureItem.attributedTitle = attributed
+                gestureItem.image = NSImage(
+                    systemSymbolName: live ? "hand.tap" : "exclamationmark.triangle",
+                    accessibilityDescription: nil)
+            }
+        }
+
         // Update connection status with colored text
         if let connectionItem = menu.item(withTag: MenuItemTag.connectionStatus.rawValue) {
             let statusText = bluetoothManager.connectionState.displayName
@@ -351,6 +404,10 @@ final class StatusBarController {
         muteCoordinator.toggleMute()
     }
 
+    @objc private func rearmGesture() {
+        onRearmGesture?()
+    }
+
     @objc private func reconnect() {
         bluetoothManager.autoConnectToPairedDevice()
     }
@@ -396,4 +453,14 @@ final class StatusBarController {
         alert.runModal()
     }
 
+}
+
+// MARK: - NSMenuDelegate
+
+extension StatusBarController: NSMenuDelegate {
+
+    /// The gesture health is polled, not published; refresh it as the menu opens.
+    func menuWillOpen(_ menu: NSMenu) {
+        updateMenuItems()
+    }
 }

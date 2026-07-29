@@ -42,9 +42,13 @@ final class AudioBridge {
 
     private(set) var running = false
 
-    private let captureEngine = AVAudioEngine()
-    private let playbackEngine = AVAudioEngine()
-    private let player = AVAudioPlayerNode()
+    // Rebuilt on every start(), never reused. An AVAudioEngine binds its I/O
+    // to the device it was built against: reusing one across an audio route
+    // change (AirPods stolen by an incoming iPhone call) makes start() fail
+    // with -10868 "format not supported" forever, however many times we retry.
+    private var captureEngine = AVAudioEngine()
+    private var playbackEngine = AVAudioEngine()
+    private var player = AVAudioPlayerNode()
     private var converter: AVAudioConverter?
     private var outputFormat: AVAudioFormat?
     private var restartPending = false
@@ -52,8 +56,11 @@ final class AudioBridge {
     // Deferred-start retry: the capture device's format can be invalid
     // (0 Hz / 0 ch) for a beat while AirPods negotiate HFP at call start.
     private var startRetries = 0
-    private let maxStartRetries = 6   // ~3s at 0.5s spacing, covers the HFP handoff
+    private let maxStartRetries = 6
     private var startGeneration = 0   // bumped on stop() to cancel pending retries
+    /// When the last start attempt happened, to ignore the configuration-change
+    /// notifications our own engine rebuild provokes.
+    private var lastStartAttempt: Date?
 
     private init() {
         // Engines renegotiate I/O when devices change (AirPods dropping
@@ -80,6 +87,14 @@ final class AudioBridge {
             print("[AudioBridge] default input is the virtual device; not bridging"); return false
         }
 
+        // Fresh engines: see the property declarations. Built before reading the
+        // input format so the format comes from a node bound to the CURRENT
+        // default input, not to whatever device the previous cycle used.
+        lastStartAttempt = Date()
+        captureEngine = AVAudioEngine()
+        playbackEngine = AVAudioEngine()
+        player = AVAudioPlayerNode()
+
         // The capture node's native format is invalid (0 Hz / 0 ch) for a beat
         // while the input renegotiates — typically AirPods switching to HFP the
         // instant a call opens the mic. installTap(format: nil) below would
@@ -96,16 +111,18 @@ final class AudioBridge {
         // Capture uses the default input device (the user's real mic). Only
         // the playback engine needs to be pinned to BlackHole.
         guard setDevice(playbackEngine, deviceID: outDev, scopeInput: false) else {
-            print("[AudioBridge] failed to pin playback device"); return false
+            scheduleStartRetry(reason: "failed to pin playback device")
+            return false
         }
 
-        if player.engine == nil { playbackEngine.attach(player) }
+        playbackEngine.attach(player)   // always a fresh player on a fresh engine
         let outFmt = playbackEngine.outputNode.inputFormat(forBus: 0)
         outputFormat = outFmt
         playbackEngine.connect(player, to: playbackEngine.outputNode, format: outFmt)
 
         guard outFmt.sampleRate > 0 else {
-            print("[AudioBridge] invalid output format \(outFmt)"); return false
+            scheduleStartRetry(reason: "invalid output format \(outFmt)")
+            return false
         }
         print("[AudioBridge] out=\(outFmt)")
 
@@ -120,18 +137,27 @@ final class AudioBridge {
             player.play()
             try captureEngine.start()
             running = true
-            let wasDeferred = startRetries > 0
             startRetries = 0
             print("[AudioBridge] running (muted=\(muted))")
-            // A deferred start succeeds after the coordinator already fell back
-            // synchronously; tell it to adopt stealth and re-apply the mute.
-            if wasDeferred {
-                NotificationCenter.default.post(name: .podsMuteBridgeDidStart, object: self)
-            }
+            // Announce every start, not just the deferred ones: a restart after
+            // a route change also happens behind the coordinator's back (see
+            // engineConfigurationChanged), and it must re-adopt stealth and
+            // re-apply the current mute or the bridge would forward audio while
+            // the user believes they are muted.
+            NotificationCenter.default.post(name: .podsMuteBridgeDidStart, object: self)
             return true
         } catch {
+            // Typically -10868 (format not supported): the input was still
+            // renegotiating when we pinned playback. Transient — retry instead
+            // of dropping to flag-mute for the rest of the call.
             print("[AudioBridge] start failed: \(error)")
+            // stop() clears the retry budget (it also serves as "call ended");
+            // carry it across so a permanently failing start still gives up
+            // instead of retrying every 0.5s forever.
+            let retries = startRetries
             stop()
+            startRetries = retries
+            scheduleStartRetry(reason: "start threw \(error.localizedDescription)")
             return false
         }
     }
@@ -139,21 +165,29 @@ final class AudioBridge {
     func stop() {
         startGeneration &+= 1   // cancel any pending deferred-start retry
         startRetries = 0
-        guard running else { return }
+        // Unconditional teardown, NOT guarded by `running`: a start() that
+        // throws after installTap leaves the tap in place with running still
+        // false, and the next start() would install a second tap on the same
+        // bus — an AVFAudio exception ('nullptr == Tap()') that Swift cannot
+        // catch, so the whole app dies.
         captureEngine.inputNode.removeTap(onBus: 0)
         captureEngine.stop()
         player.stop()
         playbackEngine.stop()
         converter = nil
         outputFormat = nil
+        if running { print("[AudioBridge] stopped") }
         running = false
-        print("[AudioBridge] stopped")
     }
 
-    /// Retry start() shortly: the input device was not ready (e.g. AirPods
+    /// Retry start() later: the input device was not ready (e.g. AirPods
     /// mid-HFP-handoff). Bounded so a permanently invalid input (no mic
     /// permission, no input device) falls back to classic flag-mute instead
     /// of looping forever.
+    ///
+    /// The delay backs off (0.5s → 4s, ~15s of budget). Hammering a Bluetooth
+    /// device with reopen attempts every 0.5s does not just fail — it keeps the
+    /// link renegotiating and audibly breaks up playback in the headphones.
     private func scheduleStartRetry(reason: String) {
         guard startRetries < maxStartRetries else {
             startRetries = 0
@@ -161,9 +195,10 @@ final class AudioBridge {
             return
         }
         startRetries += 1
+        let delay = min(0.5 * pow(2.0, Double(startRetries - 1)), 4.0)
         let gen = startGeneration
-        print("[AudioBridge] \(reason); retry \(startRetries)/\(maxStartRetries) in 0.5s")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+        print("[AudioBridge] \(reason); retry \(startRetries)/\(maxStartRetries) in \(delay)s")
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self = self, !self.running, self.startGeneration == gen else { return }
             self.start()
         }
@@ -176,6 +211,10 @@ final class AudioBridge {
               engine === captureEngine || engine === playbackEngine else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self = self, self.running, !self.restartPending else { return }
+            // Building fresh engines reconfigures the I/O and posts this
+            // notification itself; reacting to it would restart in a loop.
+            if let attempt = self.lastStartAttempt,
+               Date().timeIntervalSince(attempt) < 1.0 { return }
             self.restartPending = true
             print("[AudioBridge] engine configuration changed; restarting")
             // Let the HAL settle before rebuilding on the new device.
