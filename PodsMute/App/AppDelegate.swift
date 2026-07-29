@@ -35,6 +35,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Debug hook: SIGUSR2 toggles mute as if the hotkey fired (no keyboard
     // or AirPods needed when testing over SSH / scripts).
     private var usr2Source: DispatchSourceSignal?
+    // Debug hook: SIGUSR1 re-arms the stem gesture (route-change recovery).
+    private var usr1Source: DispatchSourceSignal?
 
     // Keep reference to BluetoothManager for device detection (status display)
     private var bluetoothManager: BluetoothManager!
@@ -72,6 +74,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self.presentMuteFeedback()
         }
         usr2Source?.resume()
+
+        // Debug hook: SIGUSR1 rebuilds the stem gesture's mic tap, same as the
+        // "Re-arm Stem Gesture" menu item (usable over SSH / from a script).
+        signal(SIGUSR1, SIG_IGN)
+        usr1Source = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+        usr1Source?.setEventHandler { [weak self] in
+            print("[AppDelegate] SIGUSR1 -> re-arming stem gesture")
+            self?.muteGestureService.rearmNow()
+        }
+        usr1Source?.resume()
 
         print("[AppDelegate] Application ready")
         print("[AppDelegate] Press your AirPods button to toggle mute")
@@ -136,6 +148,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             muteCoordinator: muteCoordinator,
             bluetoothManager: bluetoothManager
         )
+        // Escape hatch + visibility for the stem gesture: it silently dies if
+        // the audio route changes mid-call, and the menu is the only recovery
+        // available to someone in the middle of a meeting.
+        statusBarController.gestureIsLive = { [weak self] in
+            guard let self = self, self.muteGestureService.armed else { return nil }
+            return self.muteGestureService.isLive
+        }
+        statusBarController.onRearmGesture = { [weak self] in
+            self?.muteGestureService.rearmNow()
+        }
+
+        // The app muted on its own (route moved mid-call): show it, the user
+        // needs to know why they went silent.
+        muteCoordinator.onDefensiveMute = { [weak self] in
+            self?.presentMuteFeedback()
+        }
 
         // Honor the stealth toggle immediately when changed mid-call.
         NotificationCenter.default.addObserver(
@@ -191,6 +219,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if AppSettings.shared.bannerKillerEnabled {
                 self.bannerKiller.huntBanner()
             }
+        }
+
+        // A route change (iPhone call stealing the AirPods and giving them
+        // back) can leave the per-process mute the system tracks out of sync
+        // with ours; realign on every re-arm so the first stem press counts.
+        muteGestureService.onArmed = { [weak self] in
+            self?.muteCoordinator.resyncProcessMute()
         }
 
         // Arm the gesture only while another app captures the mic. This keeps

@@ -26,6 +26,10 @@ final class AudioMuteController: ObservableObject {
     /// Whether the input device supports muting
     @Published private(set) var supportsMute: Bool = false
 
+    /// The current default input device. Published so the mute coordinator can
+    /// react to the route moving (AirPods stolen by an incoming iPhone call).
+    @Published private(set) var deviceID: AudioObjectID = kAudioObjectUnknown
+
     // MARK: - Private Properties
 
     private var defaultInputDeviceID: AudioObjectID = kAudioObjectUnknown
@@ -132,10 +136,14 @@ final class AudioMuteController: ObservableObject {
             checkMuteSupport()
             updateMuteState()
             setupMuteChangeListener()
+            // Guarded: setMute() re-resolves the device on every call, and an
+            // unconditional assignment would emit a change on each mute.
+            if self.deviceID != deviceID { self.deviceID = deviceID }
 
             print("[AudioMuteController] Default input device: \(inputDeviceName) (ID: \(deviceID))")
         } else {
             defaultInputDeviceID = kAudioObjectUnknown
+            if self.deviceID != kAudioObjectUnknown { self.deviceID = kAudioObjectUnknown }
             DispatchQueue.main.async {
                 self.inputDeviceName = "No Input Device"
                 self.supportsMute = false

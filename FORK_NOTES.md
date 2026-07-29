@@ -138,11 +138,68 @@ Validado en Meet real (jun 2026).
   mientras el bridge corre. En la app de meeting hay que elegir **BlackHole 2ch** como
   micrófono una vez por app.
 - **Debug**: `kill -USR2 <pid>` togglea el mute como si fuera el atajo (sin teclado ni
-  AirPods).
+  AirPods); `kill -USR1 <pid>` re-arma el gesto del stem (ver sección 11).
 - Detalles de formato: tap con `format: nil` + `AVAudioConverter` lazy (el formato HFP
   real solo se conoce con el primer buffer); solo se pinea el engine de PLAYBACK a
   BlackHole con `auAudioUnit.setDeviceID` (pinear el capture da -10851; captura siempre
   del default input).
+
+### 11. Robustez ante cambios de ruta de audio (jul 2026)
+
+**Síntoma**: en un Meet con AirPods entra una llamada al iPhone; a partir de ahí el
+**stem deja de mutear** y solo funciona el toggle de la barra / el atajo.
+
+**Causa**: el gesto solo se entrega a procesos con input de audio vivo, y `AVAudioEngine`
+**se detiene solo** cuando cambia su configuración de I/O. `MuteGestureService` no
+observaba nada de eso: `isRunning` quedaba en `true` con el engine ya muerto, así que
+`startEngine()` era un no-op para siempre. Tampoco se re-armaba por otra vía, porque
+`MicUsageMonitor` no cambia de estado (Meet nunca dejó de capturar). El mute por CoreAudio
+seguía andando, de ahí que pareciera "se rompió solo el stem".
+
+Lecciones (varias descubiertas al arreglarlo, todas con crash o audio roto de por medio):
+
+- **Una instancia de `AVAudioEngine` no se puede reusar cruzando un cambio de ruta.** El
+  engine queda ligado al device contra el que se construyó: después del cambio,
+  `start()` falla con **-10868** (`format not supported`, en
+  `AUGraphParser::InitializeActiveNodesInInputChain`) **para siempre**, por más reintentos
+  que se hagan. Hay que **descartar la instancia y crear una nueva**. Aplica igual a
+  `MuteGestureService` y a los dos engines de `AudioBridge` (que también quedaba pegado).
+- **`installTap` siempre con `format: nil`.** Pasar el formato leído un instante antes
+  corre carrera con la renegociación: AVFAudio tira `Failed to create tap due to format
+  mismatch`, una `NSException` que Swift **no puede atrapar** → muere la app.
+- **Los `stop()` tienen que desmontar incondicionalmente.** Con `guard running else
+  { return }` antes del `removeTap`, un `start()` que falla deja el tap puesto y el
+  siguiente `start()` instala un segundo tap en el mismo bus → `nullptr == Tap()`, otra
+  `NSException` no atrapable. Este crash ya se había comido la app en producción.
+- **Los reintentos necesitan backoff.** Reabrir el input cada 0.5s no solo falla: mantiene
+  el link Bluetooth renegociando y **corta el audio de los auriculares**. Ahora hay
+  backoff (0.5→4s) y los dos servicios usan bases distintas (0.5s vs 0.8s) para no
+  reabrir el mismo device en lockstep.
+- **Crear engines nuevos postea `AVAudioEngineConfigurationChange` por sí mismo**: sin una
+  ventana de gracia (~1s tras el intento de arranque) el manejador se llama a sí mismo en
+  loop.
+- **El bridge también necesita reintento mid-call.** Si se cae por algo transitorio (el
+  default input *era* BlackHole, o se agotó el burst de reintentos), nada lo volvía a
+  levantar: `MicUsageMonitor` solo avisa cuando la captura arranca/termina, y el restart
+  propio del bridge exige estar corriendo. La app de meeting quedaba capturando un device
+  virtual que nadie alimenta = silencio el resto de la llamada. `MuteCoordinator`
+  re-evalúa ahora en cada cambio de ruta y de set de devices capturados.
+- `AudioBridge` postea `.podsMuteBridgeDidStart` en **todo** arranque (antes solo en el
+  diferido): un restart por cambio de ruta ocurre a espaldas del coordinator, que tiene
+  que re-adoptar stealth y re-aplicar el mute o quedaría reenviando audio mientras el
+  usuario se cree muteado.
+
+**Auto-mute defensivo**: al cambiar el default input a mitad de llamada, `MuteCoordinator`
+mutea solo (con HUD y tono). Cuando el iPhone se lleva los AirPods, macOS cae al mic del
+MacBook y el bridge lo reenviaría alegremente al Meet — los participantes escuchando tu
+llamada telefónica. Un mute que no pediste se arregla con un press; transmitir la sala, no.
+No tiene toggle en Preferences (todavía).
+
+**Diagnóstico**: el menú de la barra muestra `Stem gesture: listening / not listening`
+mientras hay llamada, con acción **Re-arm Stem Gesture** (o `kill -USR1 <pid>`). El
+LaunchAgent tiene `KeepAlive: {SuccessfulExit: false}`: relanza solo si crashea (las
+`NSException` de AVFAudio no son atrapables, y morir a mitad de reunión deja el mic sin
+control), mientras Quit del menú sigue quedando quieto.
 
 ## Build (sin Xcode)
 
