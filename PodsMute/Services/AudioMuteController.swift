@@ -36,12 +36,6 @@ final class AudioMuteController: ObservableObject {
     private var deviceChangeListenerBlock: AudioObjectPropertyListenerBlock?
     private var muteChangeListenerBlock: AudioObjectPropertyListenerBlock?
 
-    /// Devices we set the mute flag on, so we can clear exactly those later.
-    /// Tracking them is not bookkeeping for its own sake: the set of captured
-    /// devices moves mid-call, and clearing the flag from "whatever is default
-    /// now" would strand a muted device with no way back from the UI.
-    private var flaggedDevices: Set<AudioObjectID> = []
-
     // MARK: - Initialization
 
     init() {
@@ -63,67 +57,21 @@ final class AudioMuteController: ObservableObject {
     /// Set the mute state of the default input device.
     /// - Parameter muted: Whether to mute (true) or unmute (false)
     func setMute(_ muted: Bool) {
-        setMute(muted, devices: defaultInputTarget())
-    }
-
-    /// Apply the HAL mute flag to an explicit set of input devices.
-    ///
-    /// The caller decides WHICH devices matter, because the default input is not
-    /// necessarily the device being recorded: a meeting app can hold a device
-    /// open that is not the default (Slack keeping the AirPods while the default
-    /// moved to BlackHole). Flagging the default in that case mutes a device
-    /// nobody is listening to and leaves the real one live — audible while the
-    /// UI says muted.
-    ///
-    /// Unmuting ignores `devices` and clears every flag we set, so a device that
-    /// dropped out of the set mid-call cannot stay muted behind our back.
-    func setMute(_ muted: Bool, devices: Set<AudioObjectID>) {
         // Device IDs are reassigned when audio hardware changes; re-resolve
         // so we never act on a stale device.
         refreshDefaultInputDevice()
 
-        if muted {
-            guard !devices.isEmpty else {
-                print("[AudioMuteController] No device to flag")
-                return
-            }
-            for device in devices where applyFlag(true, to: device) {
-                flaggedDevices.insert(device)
-            }
-            // Devices that left the set mid-call (the app switched mic): let
-            // them go, we are the only reason they are muted.
-            let stale = flaggedDevices.subtracting(devices)
-            for device in stale { applyFlag(false, to: device) }
-            flaggedDevices.subtract(stale)
-        } else {
-            for device in flaggedDevices { applyFlag(false, to: device) }
-            flaggedDevices.removeAll()
-        }
-
-        // Reflect the default input's flag, which is what `isMuted` means (it
-        // also has to catch mutes made outside this app). When the flagged set
-        // does not include the default, this stays false on purpose: the
-        // coordinator combines it with the bridge state for the user-facing one.
-        updateMuteState()
-        print("[AudioMuteController] mute flag=\(muted) devices=\(flaggedDevices.sorted())")
-    }
-
-    /// The default input as a mute target, empty if there is none.
-    private func defaultInputTarget() -> Set<AudioObjectID> {
-        refreshDefaultInputDevice()
         guard defaultInputDeviceID != kAudioObjectUnknown else {
             print("[AudioMuteController] No input device available")
-            return []
+            return
         }
-        return [defaultInputDeviceID]
-    }
 
-    /// Set/clear the flag on one device. Returns whether the device now carries
-    /// the requested state (false = the device cannot be flagged at all, which
-    /// the caller must treat as "still audible").
-    @discardableResult
-    private func applyFlag(_ muted: Bool, to device: AudioObjectID) -> Bool {
-        guard device != kAudioObjectUnknown else { return false }
+        guard supportsMute else {
+            print("[AudioMuteController] Device does not support mute")
+            return
+        }
+
+        var muteValue: UInt32 = muted ? 1 : 0
 
         var propertyAddress = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyMute,
@@ -131,17 +79,8 @@ final class AudioMuteController: ObservableObject {
             mElement: kAudioObjectPropertyElementMain
         )
 
-        // Not every input exposes a mute flag (some Bluetooth routes do not).
-        // Say so loudly: this is the one failure that leaves the user audible
-        // while believing they are muted.
-        guard AudioObjectHasProperty(device, &propertyAddress) else {
-            print("[AudioMuteController] WARNING: device \(device) (\(name(of: device))) has no mute property; CANNOT mute it")
-            return false
-        }
-
-        var muteValue: UInt32 = muted ? 1 : 0
         let result = AudioObjectSetPropertyData(
-            device,
+            defaultInputDeviceID,
             &propertyAddress,
             0,
             nil,
@@ -149,26 +88,14 @@ final class AudioMuteController: ObservableObject {
             &muteValue
         )
 
-        guard result == noErr else {
-            print("[AudioMuteController] Failed to set mute on \(device) (\(name(of: device))): \(result)")
-            return false
+        if result == noErr {
+//            DispatchQueue.main.async {
+            self.isMuted = muted
+//            }
+            print("[AudioMuteController] Mute set to: \(muted)")
+        } else {
+            print("[AudioMuteController] Failed to set mute state: \(result)")
         }
-        return true
-    }
-
-    /// Human-readable name for a device, for logging.
-    private func name(of device: AudioObjectID) -> String {
-        var propertyAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyDeviceNameCFString,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var name: Unmanaged<CFString>?
-        var propertySize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-        guard AudioObjectGetPropertyData(device, &propertyAddress, 0, nil,
-                                         &propertySize, &name) == noErr,
-              let cfName = name?.takeRetainedValue() else { return "?" }
-        return cfName as String
     }
 
     /// Refresh the current mute state from the device.
@@ -211,15 +138,9 @@ final class AudioMuteController: ObservableObject {
             setupMuteChangeListener()
             // Guarded: setMute() re-resolves the device on every call, and an
             // unconditional assignment would emit a change on each mute.
-            let changed = self.deviceID != deviceID
-            if changed { self.deviceID = deviceID }
+            if self.deviceID != deviceID { self.deviceID = deviceID }
 
-            // Only on change: every setMute() lands here, and this log is the
-            // main diagnostic trail for route problems — repeating the same
-            // device on each mute buries the actual transitions.
-            if changed {
-                print("[AudioMuteController] Default input device: \(name(of: deviceID)) (ID: \(deviceID))")
-            }
+            print("[AudioMuteController] Default input device: \(inputDeviceName) (ID: \(deviceID))")
         } else {
             defaultInputDeviceID = kAudioObjectUnknown
             if self.deviceID != kAudioObjectUnknown { self.deviceID = kAudioObjectUnknown }
