@@ -141,10 +141,12 @@ final class MuteCoordinator: ObservableObject {
     }
 
     /// The set of devices other apps capture changed mid-call; re-apply the
-    /// current mute so the defense flag tracks reality (1s poll granularity).
+    /// current mute so the flag tracks reality (1s poll granularity). Applies
+    /// with or without the bridge: either way the flag targets the captured
+    /// devices, so a meeting app switching mic mid-mute has to be followed.
     func externalCaptureDevicesChanged() {
         retryBridgeIfDown()
-        guard stealthActive, isMuted else { return }
+        guard isMuted else { return }
         applyMute(true)
     }
 
@@ -185,14 +187,15 @@ final class MuteCoordinator: ObservableObject {
         if bridge.running {
             bridge.muted = muted
             // Defense: the bridge cannot silence an app capturing a real
-            // device directly; cover it with the HAL flag.
-            let needsFlag = muted && captureBypassesBridge()
-            if needsFlag != audioController.isMuted {
-                audioController.setMute(needsFlag)
-            }
-            print("[MuteCoordinator] stealth mute=\(muted) defenseFlag=\(needsFlag)")
+            // device directly; cover it with the HAL flag — on THOSE devices.
+            // Flagging the default input instead would mute whatever happens to
+            // be default (often the very device the bridge already covers) and
+            // leave the captured one live: audible while the UI says muted.
+            let exposed = muted ? devicesBypassingBridge() : []
+            audioController.setMute(muted, devices: exposed)
+            print("[MuteCoordinator] stealth mute=\(muted) defenseFlag=\(exposed.sorted())")
         } else {
-            audioController.setMute(muted)
+            audioController.setMute(muted, devices: classicMuteTargets())
         }
         // Keep the per-process input mute the system tracks in sync:
         // - the stem gesture toggles from the state the system believes, so
@@ -223,12 +226,25 @@ final class MuteCoordinator: ObservableObject {
         stealthActive = false
     }
 
-    /// True if any external process captures a device other than BlackHole,
-    /// i.e. audio that does not flow through (and cannot be cut by) the bridge.
-    private func captureBypassesBridge() -> Bool {
+    /// Devices captured by external processes that the bridge cannot silence,
+    /// i.e. audio that does not flow through it. Empty means the bridge covers
+    /// everything and no HAL flag is needed (which is the whole point of
+    /// stealth: no flag anywhere for the meeting app to notice).
+    private func devicesBypassingBridge() -> Set<AudioObjectID> {
         let external = micUsageMonitor.capturedInputDevices
-        guard !external.isEmpty else { return false }
-        guard let virtualID = AudioBridge.virtualDeviceID else { return true }
-        return !external.subtracting([virtualID]).isEmpty
+        guard !external.isEmpty else { return [] }
+        guard let virtualID = AudioBridge.virtualDeviceID else { return external }
+        return external.subtracting([virtualID])
+    }
+
+    /// Without the bridge, the flag has to cover every device an external
+    /// process is capturing, plus the default input: nothing may be capturing
+    /// it right now, but that is where a mic opened mid-mute would land.
+    private func classicMuteTargets() -> Set<AudioObjectID> {
+        var targets = micUsageMonitor.capturedInputDevices
+        if audioController.deviceID != kAudioObjectUnknown {
+            targets.insert(audioController.deviceID)
+        }
+        return targets
     }
 }

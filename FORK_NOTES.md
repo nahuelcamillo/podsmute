@@ -122,6 +122,19 @@ Validado en Meet real (jun 2026).
   el coordinator detecta eso vía `kAudioProcessPropertyDevices` (scope input) y aplica
   **también** el flag HAL. Preferimos que Meet "vea" el mute antes que quedar audible
   creyéndose muteado. Se re-evalúa si cambia el set de devices capturados (poll 1s).
+- **El flag va sobre los devices CAPTURADOS, no sobre el default input** (jul 2026). El
+  device que graba no es necesariamente el default: Slack puede tener abiertos los
+  AirPods mientras el default es BlackHole. Flaggear el default muteaba un device que
+  nadie escuchaba y dejaba vivo el real → audible con la UI diciendo "muteado".
+  `AudioMuteController.setMute(_:devices:)` recibe el set explícito y **trackea qué
+  devices flageó** (`flaggedDevices`) para poder liberarlos: al desmutear se limpian
+  todos, y si un device sale del set a mitad de llamada (la app cambió de mic) se
+  libera solo. Sin ese tracking, limpiar "el default de ahora" dejaba un device muteado
+  para siempre, sin forma de recuperarlo desde la UI.
+- **No todo input soporta mute**: `Nahuel's iPhone Microphone` (Continuity) no expone
+  `kAudioDevicePropertyMute`. Si una app captura ESE device, el flag no puede
+  silenciarlo y el stealth tampoco (no pasa por el bridge): queda audible. Se loguea con
+  `WARNING: ... CANNOT mute it` porque es el único caso donde el mute miente.
 - **Sincronización del mute por proceso**: cada cambio llama
   `AVAudioApplication.setInputMuted` para que el estado que el sistema le atribuye al
   proceso siga al nuestro. Dos motivos: el stem togglea desde el estado que el sistema
