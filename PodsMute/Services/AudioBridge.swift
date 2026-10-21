@@ -42,17 +42,26 @@ final class AudioBridge {
 
     private(set) var running = false
 
-    private let captureEngine = AVAudioEngine()
-    private let playbackEngine = AVAudioEngine()
-    private let player = AVAudioPlayerNode()
+    // Rebuilt on every teardown: an AVAudioEngine stays bound to the device
+    // it was built against, so after a route change (default input switched
+    // to the AirPods) restarting the same instance fails with -10868 forever.
+    private var captureEngine = AVAudioEngine()
+    private var playbackEngine = AVAudioEngine()
+    private var player = AVAudioPlayerNode()
     private var converter: AVAudioConverter?
     private var outputFormat: AVAudioFormat?
     private var restartPending = false
 
+    // Building fresh engines posts AVAudioEngineConfigurationChange itself;
+    // ignore that echo or restarts would loop.
+    private var lastStartAttempt = Date.distantPast
+    // Set when a start happens behind the coordinator's back (restart).
+    private var announceNextStart = false
+
     // Deferred-start retry: the capture device's format can be invalid
     // (0 Hz / 0 ch) for a beat while AirPods negotiate HFP at call start.
     private var startRetries = 0
-    private let maxStartRetries = 6   // ~3s at 0.5s spacing, covers the HFP handoff
+    private let maxStartRetries = 6   // ~10s with linear backoff, covers the HFP handoff
     private var startGeneration = 0   // bumped on stop() to cancel pending retries
 
     private init() {
@@ -70,6 +79,7 @@ final class AudioBridge {
     @discardableResult
     func start() -> Bool {
         guard !running else { return true }
+        lastStartAttempt = Date()
 
         guard let outDev = Self.virtualDeviceID else {
             print("[AudioBridge] virtual device (BlackHole) not installed"); return false
@@ -120,18 +130,22 @@ final class AudioBridge {
             player.play()
             try captureEngine.start()
             running = true
-            let wasDeferred = startRetries > 0
+            let wasDeferred = startRetries > 0 || announceNextStart
             startRetries = 0
+            announceNextStart = false
             print("[AudioBridge] running (muted=\(muted))")
-            // A deferred start succeeds after the coordinator already fell back
-            // synchronously; tell it to adopt stealth and re-apply the mute.
+            // A deferred start or a restart succeeds behind the coordinator's
+            // back; tell it to adopt stealth and re-apply the mute.
             if wasDeferred {
                 NotificationCenter.default.post(name: .podsMuteBridgeDidStart, object: self)
             }
             return true
         } catch {
             print("[AudioBridge] start failed: \(error)")
-            stop()
+            // Tear down without resetting the retry budget, then try again on
+            // fresh engines (bounded): typically the device was still settling.
+            teardown()
+            scheduleStartRetry(reason: "start failed")
             return false
         }
     }
@@ -139,15 +153,26 @@ final class AudioBridge {
     func stop() {
         startGeneration &+= 1   // cancel any pending deferred-start retry
         startRetries = 0
-        guard running else { return }
+        announceNextStart = false
+        teardown()
+    }
+
+    /// Release everything, even after a failed start (which leaves the tap
+    /// installed with `running` false), and swap in fresh engines for the
+    /// next start().
+    private func teardown() {
+        let wasRunning = running
         captureEngine.inputNode.removeTap(onBus: 0)
         captureEngine.stop()
         player.stop()
         playbackEngine.stop()
+        captureEngine = AVAudioEngine()
+        playbackEngine = AVAudioEngine()
+        player = AVAudioPlayerNode()
         converter = nil
         outputFormat = nil
         running = false
-        print("[AudioBridge] stopped")
+        if wasRunning { print("[AudioBridge] stopped") }
     }
 
     /// Retry start() shortly: the input device was not ready (e.g. AirPods
@@ -162,8 +187,11 @@ final class AudioBridge {
         }
         startRetries += 1
         let gen = startGeneration
-        print("[AudioBridge] \(reason); retry \(startRetries)/\(maxStartRetries) in 0.5s")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+        print("[AudioBridge] \(reason); retry \(startRetries)/\(maxStartRetries) in \(0.5 * Double(startRetries))s")
+        // Back off: reopening a Bluetooth input every 0.5s keeps the link
+        // renegotiating and audibly breaks up playback in the headphones.
+        let delay = 0.5 * Double(startRetries)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self = self, !self.running, self.startGeneration == gen else { return }
             self.start()
         }
@@ -175,13 +203,15 @@ final class AudioBridge {
         guard let engine = note.object as? AVAudioEngine,
               engine === captureEngine || engine === playbackEngine else { return }
         DispatchQueue.main.async { [weak self] in
-            guard let self = self, self.running, !self.restartPending else { return }
+            guard let self = self, self.running, !self.restartPending,
+                  Date().timeIntervalSince(self.lastStartAttempt) > 1.0 else { return }
             self.restartPending = true
             print("[AudioBridge] engine configuration changed; restarting")
             // Let the HAL settle before rebuilding on the new device.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 self.restartPending = false
                 self.stop()
+                self.announceNextStart = true
                 self.start()
             }
         }
